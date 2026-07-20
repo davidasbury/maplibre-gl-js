@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>Equal Earth projection (debug)</title>
+    <meta property="og:description" content="Stage A Demo A check: land polygons rendered with the equal-earth projection." />
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel='stylesheet' href='../../dist/maplibre-gl.css' />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body,
+        #map {
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+<div id="map"></div>
+<script type="module">
+    import * as maplibregl from '../../dist/maplibre-gl-dev.mjs';
+
+    // 15-degree graticule as a client-side GeoJSON so curvature of parallels/
+    // meridians (the visible signature of Equal Earth vs mercator) is obvious.
+    const graticule = {type: 'FeatureCollection', features: []};
+    for (let lng = -180; lng <= 180; lng += 15) {
+        const coords = [];
+        for (let lat = -90; lat <= 90; lat += 2) coords.push([lng, lat]);
+        graticule.features.push({type: 'Feature', properties: {}, geometry: {type: 'LineString', coordinates: coords}});
+    }
+    for (let lat = -90; lat <= 90; lat += 15) {
+        const coords = [];
+        for (let lng = -180; lng <= 180; lng += 2) coords.push([lng, lat]);
+        graticule.features.push({type: 'Feature', properties: {}, geometry: {type: 'LineString', coordinates: coords}});
+    }
+
+    const map = new maplibregl.Map({
+        container: 'map',
+        style: {
+            version: 8,
+            projection: {type: 'equal-earth'},
+            sources: {
+                land: {
+                    type: 'geojson',
+                    data: '../bench/data/naturalearth-land.json'
+                },
+                graticule: {
+                    type: 'geojson',
+                    data: graticule
+                }
+            },
+            layers: [
+                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8', 'fill-outline-color': '#6b8f5a'}},
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+            ]
+        },
+        center: [0, 0],
+        zoom: 1.4
+    });
+    window.map = map;
+</script>
+</body>
+
+</html>
