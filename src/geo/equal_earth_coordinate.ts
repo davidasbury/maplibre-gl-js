@@ -61,3 +61,38 @@ export function lngLatFromEqualEarthXY(x: number, y: number): {lng: number; lat:
 
     return {lng: radiansToDegrees(lam), lat: radiansToDegrees(phi)};
 }
+
+/**
+ * Full paper-unit width of the Equal Earth world: 2 × x at λ=180°, φ=0.
+ * One uniform divisor for both axes preserves the equal-area shape; world-y
+ * therefore spans only ~[0.2566, 0.7434] of the unit square, deliberately.
+ */
+export const EQUAL_EARTH_WORLD_EXTENT: number = 2 * 2.7066299836960748;
+
+/**
+ * Forward Equal Earth projection into the engine's fraction-of-world
+ * unit-square convention (the analogue of `MercatorCoordinate`'s unit world):
+ * (0.5, 0.5) is (0°, 0°), x=1 is λ=180° on the equator, and y grows
+ * southward (y-down). This function and `lngLatFromEqualEarthWorld` carry the
+ * *entire* world convention — the `EQUAL_EARTH_WORLD_EXTENT` scale and the
+ * y-flip — so callers never hand-roll either.
+ */
+export function equalEarthWorldFromLngLat(lng: number, lat: number): {x: number; y: number} {
+    const {x, y} = equalEarthXYFromLngLat(lng, lat);
+    return {
+        x: x / EQUAL_EARTH_WORLD_EXTENT + 0.5,
+        y: 0.5 - y / EQUAL_EARTH_WORLD_EXTENT
+    };
+}
+
+/**
+ * Inverse of `equalEarthWorldFromLngLat`: unit-square world coordinates
+ * (y-down) back to lng/lat, undoing the scale and y-flip before entering the
+ * paper-convention Newton inverse.
+ */
+export function lngLatFromEqualEarthWorld(x: number, y: number): {lng: number; lat: number} {
+    return lngLatFromEqualEarthXY(
+        (x - 0.5) * EQUAL_EARTH_WORLD_EXTENT,
+        (0.5 - y) * EQUAL_EARTH_WORLD_EXTENT
+    );
+}

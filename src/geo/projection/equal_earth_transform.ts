@@ -8,7 +8,7 @@ import {interpolates} from '@maplibre/maplibre-gl-style-spec';
 import {type PointProjection, xyTransformMat4} from '../../symbol/projection.ts';
 import {LngLatBounds} from '../lng_lat_bounds.ts';
 import {getMercatorHorizon, maxMercatorHorizonAngle, cameraMercatorCoordinateFromCenterAndRotation, calculateTileMatrix} from './mercator_utils.ts';
-import {equalEarthXYFromLngLat, lngLatFromEqualEarthXY} from '../equal_earth_coordinate.ts';
+import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld} from '../equal_earth_coordinate.ts';
 import {projectToEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {EXTENT} from '../../data/extent.ts';
 import {TransformHelper} from '../transform_helper.ts';
@@ -28,14 +28,16 @@ import type {CoveringTilesDetailsProvider} from './covering_tiles_details_provid
  * (same "fraction of world" unit convention, no branded class -- this
  * project deliberately keeps `equal_earth_coordinate.ts` to plain
  * functions/objects, and this Transform matches that). `z` is optional so
- * callers that only ever produce x/y (e.g. `equalEarthXYFromLngLat`) don't
- * need to fabricate a fake altitude.
+ * callers that only ever produce x/y (e.g. `equalEarthWorldFromLngLat`)
+ * don't need to fabricate a fake altitude.
  *
- * These are y-DOWN unit-world coordinates (north is smaller y), matching
+ * These are unit-square world coordinates: (0.5, 0.5) is (0°, 0°), y is DOWN
+ * (north is smaller y; the north-pole line sits at y≈0.2566), matching
  * mercator's screen-oriented world space -- the convention the copied camera
- * math in `_calcMatrices` assumes. `equal_earth_coordinate.ts` itself stays
- * in the paper's y-up convention; every call into it from this file crosses
- * that boundary and negates y at the seam.
+ * math in `_calcMatrices` assumes. `equal_earth_coordinate.ts`'s
+ * `equalEarthWorldFromLngLat`/`lngLatFromEqualEarthWorld` carry the whole
+ * conversion (scale + y-flip); this file never touches the paper-convention
+ * functions directly.
  */
 type EqualEarthCoordinate = {x: number; y: number; z?: number};
 
@@ -313,13 +315,13 @@ export class EqualEarthTransform implements ITransform {
         const z = mercatorZfromAltitude(this.elevation, this.center.lat);
         const a = this.screenPointToEqualEarthCoordinateAtZ(point, z);
         const b = this.screenPointToEqualEarthCoordinateAtZ(this.centerPoint, z);
-        const loc = equalEarthXYFromLngLat(lnglat.lng, lnglat.lat);
-        // `a`/`b` come from the matrix pipeline and are y-down; `loc` is
-        // paper-convention y-up, so flip it before mixing the two, and flip
-        // back when re-entering the paper-convention inverse.
+        // `a`/`b` come from the matrix pipeline and `loc` from the forward
+        // projection -- all three are the same unit-square world convention,
+        // so the offset arithmetic mixes them directly.
+        const loc = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat);
         const newX = loc.x - (a.x - b.x);
-        const newY = -loc.y - (a.y - b.y);
-        const {lng, lat} = lngLatFromEqualEarthXY(newX, -newY);
+        const newY = loc.y - (a.y - b.y);
+        const {lng, lat} = lngLatFromEqualEarthWorld(newX, newY);
         this.setCenter(new LngLat(lng, lat));
         if (this._helper._renderWorldCopies) {
             this.setCenter(this.center.wrap());
@@ -327,10 +329,7 @@ export class EqualEarthTransform implements ITransform {
     }
 
     locationToScreenPoint(lnglat: LngLat, terrain?: Terrain): Point {
-        // Paper-convention y-up result -> y-down world before it meets the
-        // pixel matrices (see `EqualEarthCoordinate`).
-        const loc = equalEarthXYFromLngLat(lnglat.lng, lnglat.lat);
-        const coord: EqualEarthCoordinate = {x: loc.x, y: -loc.y};
+        const coord: EqualEarthCoordinate = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat);
         return terrain ?
             this.coordinatePoint(coord, terrain.getElevationForLngLat(lnglat, this), this._pixelMatrix3D) :
             this.coordinatePoint(coord);
@@ -338,8 +337,7 @@ export class EqualEarthTransform implements ITransform {
 
     screenPointToLocation(p: Point, terrain?: Terrain): LngLat {
         const coord = this.screenPointToEqualEarthCoordinate(p, terrain);
-        // `coord` is y-down unit-world; the paper-convention inverse wants y-up.
-        const {lng, lat} = lngLatFromEqualEarthXY(coord.x, -coord.y);
+        const {lng, lat} = lngLatFromEqualEarthWorld(coord.x, coord.y);
         return new LngLat(lng, lat);
     }
 
@@ -360,17 +358,17 @@ export class EqualEarthTransform implements ITransform {
         // terrain.pointCoordinate returns a MercatorCoordinate (DEM data is
         // mercator-tiled, not Equal-Earth-tiled), so it must be re-expressed
         // in Equal Earth space before returning — callers feed x/y straight
-        // into lngLatFromEqualEarthXY. Terrain support overall is a non-goal
-        // for this projection and this branch is unverified beyond that
-        // coordinate-space conversion.
+        // into lngLatFromEqualEarthWorld. Terrain support overall is a
+        // non-goal for this projection and this branch is unverified beyond
+        // that coordinate-space conversion.
         if (terrain) {
             const coordinate = terrain.pointCoordinate(p);
             if (coordinate != null) {
                 const lngLat = coordinate.toLngLat();
-                const {x, y} = equalEarthXYFromLngLat(lngLat.lng, lngLat.lat);
-                // Negated y: must return the same y-down unit-world convention
-                // as the AtZ path below (see `EqualEarthCoordinate`).
-                return {x, y: -y, z: coordinate.z};
+                // Same unit-square y-down world convention as the AtZ path
+                // below (see `EqualEarthCoordinate`).
+                const {x, y} = equalEarthWorldFromLngLat(lngLat.lng, lngLat.lat);
+                return {x, y, z: coordinate.z};
             }
         }
         return this.screenPointToEqualEarthCoordinateAtZ(p);
@@ -693,9 +691,8 @@ export class EqualEarthTransform implements ITransform {
     }
 
     lngLatToCameraDepth(lngLat: LngLat, elevation: number): number {
-        const coord = equalEarthXYFromLngLat(lngLat.lng, lngLat.lat);
-        // Negated y: `_viewProjMatrix` consumes y-down world coordinates.
-        const p = [coord.x * this.worldSize, -coord.y * this.worldSize, elevation, 1] as vec4;
+        const coord = equalEarthWorldFromLngLat(lngLat.lng, lngLat.lat);
+        const p = [coord.x * this.worldSize, coord.y * this.worldSize, elevation, 1] as vec4;
         vec4.transformMat4(p, p, this._viewProjMatrix);
         return (p[2] / p[3]);
     }

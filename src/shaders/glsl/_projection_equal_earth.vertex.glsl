@@ -15,6 +15,11 @@ const float EE_A2 = -0.081106;
 const float EE_A3 = 0.000893;
 const float EE_A4 = 0.003796;
 const float EE_M = sqrt(3.0) / 2.0;
+// Full paper-unit width of the Equal Earth world: 2 * 2.7066299836960748
+// (EQUAL_EARTH_WORLD_EXTENT in equal_earth_coordinate.ts). Full float64
+// digits kept in source; GLSL truncates to float32 precision, which is
+// fine/unavoidable GPU-side.
+const float EE_WORLD_EXTENT = 5.4132599673921497;
 
 float projectLineThickness(float tileY) {
     // Known Stage-A defect, deferred deliberately: Equal Earth line thickness
@@ -28,9 +33,11 @@ float projectCircleRadius(float tileY) {
     return 1.0;
 }
 
-// Consider this private. Computes the Equal Earth position of a vertex in the
-// paper's y-up convention on the unit sphere (radius 1), matching
-// equalEarthXYFromLngLat on the CPU.
+// Consider this private. Computes the Equal Earth position of a vertex as
+// unit-square world coordinates -- (0.5, 0.5) = (0, 0) degrees, y-down --
+// matching equalEarthWorldFromLngLat on the CPU: the paper-convention
+// forward polynomial normalized by EE_WORLD_EXTENT with the y-flip folded
+// in. Not paper coordinates.
 vec2 projectToEqualEarth(vec2 posInTile, vec2 rawPos) {
     // Compute position in range 0..1 of the base tile of web mercator
     vec2 mercator_pos = u_projection_tile_mercator_coords.xy + u_projection_tile_mercator_coords.zw * posInTile;
@@ -63,18 +70,16 @@ vec2 projectToEqualEarth(vec2 posInTile, vec2 rawPos) {
         (EE_M * (EE_A1 + 3.0 * EE_A2 * paramLatSq + paramLatPow6 * (7.0 * EE_A3 + 9.0 * EE_A4 * paramLatSq)));
     float y = paramLat * (EE_A1 + EE_A2 * paramLatSq + paramLatPow6 * (EE_A3 + EE_A4 * paramLatSq));
 
-    return vec2(x, y);
+    return vec2(x / EE_WORLD_EXTENT + 0.5, 0.5 - y / EE_WORLD_EXTENT);
 }
 
 // Projects a point in tile-local coordinates (usually 0..EXTENT) to screen,
 // and handles special pole vertices (rendered, not killed -- see above).
-// The y negation is the one GPU-side crossing of the paper-y-up ->
-// world-y-down seam, mirroring equal_earth_utils.ts on the CPU:
-// u_projection_matrix (the equalEarthMatrix) consumes y-down unit
-// Equal Earth coordinates.
+// projectToEqualEarth already returns unit-square y-down world coordinates,
+// which is exactly what u_projection_matrix (the equalEarthMatrix) consumes.
 vec4 projectTile(vec2 p, vec2 rawPos) {
     vec2 ee = projectToEqualEarth(p, rawPos);
-    return u_projection_matrix * vec4(ee.x, -ee.y, 0.0, 1.0);
+    return u_projection_matrix * vec4(ee.x, ee.y, 0.0, 1.0);
 }
 
 // Projects a point in tile-local coordinates (usually 0..EXTENT) to screen.
@@ -88,7 +93,7 @@ vec4 projectTileWithElevation(vec2 posInTile, float elevation) {
     // pole vertices, so no sentinel detection. Elevation passes through as z
     // (unused in Demo A).
     vec2 ee = projectToEqualEarth(posInTile, vec2(0.0, 0.0));
-    return u_projection_matrix * vec4(ee.x, -ee.y, elevation, 1.0);
+    return u_projection_matrix * vec4(ee.x, ee.y, elevation, 1.0);
 }
 
 vec4 projectTileFor3D(vec2 posInTile, float elevation) {
