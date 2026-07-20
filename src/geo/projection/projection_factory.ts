@@ -8,6 +8,9 @@ import {GlobeCameraHelper} from './globe_camera_helper.ts';
 import {VerticalPerspectiveCameraHelper} from './vertical_perspective_camera_helper.ts';
 import {VerticalPerspectiveTransform} from './vertical_perspective_transform.ts';
 import {VerticalPerspectiveProjection} from './vertical_perspective_projection.ts';
+import {EqualEarthProjection} from './equal_earth_projection.ts';
+import {EqualEarthTransform} from './equal_earth_transform.ts';
+import {EqualEarthCameraHelper} from './equal_earth_camera_helper.ts';
 
 import type {ProjectionSpecification} from '@maplibre/maplibre-gl-style-spec';
 import type {Projection} from './projection.ts';
@@ -60,6 +63,14 @@ export function createProjectionFromName(name: ProjectionSpecification['type'], 
                 projection: new VerticalPerspectiveProjection(),
                 transform: new VerticalPerspectiveTransform(transformOptions),
                 cameraHelper: new VerticalPerspectiveCameraHelper(),
+            };
+        }
+        case 'equal-earth':
+        {
+            return {
+                projection: new EqualEarthProjection(),
+                transform: new EqualEarthTransform(transformOptions),
+                cameraHelper: new EqualEarthCameraHelper(),
             };
         }
         default:

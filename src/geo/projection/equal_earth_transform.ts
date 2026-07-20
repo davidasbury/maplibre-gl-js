@@ -30,6 +30,12 @@ import type {CoveringTilesDetailsProvider} from './covering_tiles_details_provid
  * functions/objects, and this Transform matches that). `z` is optional so
  * callers that only ever produce x/y (e.g. `equalEarthXYFromLngLat`) don't
  * need to fabricate a fake altitude.
+ *
+ * These are y-DOWN unit-world coordinates (north is smaller y), matching
+ * mercator's screen-oriented world space -- the convention the copied camera
+ * math in `_calcMatrices` assumes. `equal_earth_coordinate.ts` itself stays
+ * in the paper's y-up convention; every call into it from this file crosses
+ * that boundary and negates y at the seam.
  */
 type EqualEarthCoordinate = {x: number; y: number; z?: number};
 
@@ -241,6 +247,8 @@ export class EqualEarthTransform implements ITransform {
 
     private _projectionMatrix: mat4;
     private _viewProjMatrix: mat4;
+    private _equalEarthMatrix: mat4;
+    private _equalEarthMatrix32f: Mat4f32;
     private _invViewProjMatrix: mat4;
     private _invProjMatrix: mat4;
     private _alignedProjMatrix: mat4;
@@ -306,9 +314,12 @@ export class EqualEarthTransform implements ITransform {
         const a = this.screenPointToEqualEarthCoordinateAtZ(point, z);
         const b = this.screenPointToEqualEarthCoordinateAtZ(this.centerPoint, z);
         const loc = equalEarthXYFromLngLat(lnglat.lng, lnglat.lat);
+        // `a`/`b` come from the matrix pipeline and are y-down; `loc` is
+        // paper-convention y-up, so flip it before mixing the two, and flip
+        // back when re-entering the paper-convention inverse.
         const newX = loc.x - (a.x - b.x);
-        const newY = loc.y - (a.y - b.y);
-        const {lng, lat} = lngLatFromEqualEarthXY(newX, newY);
+        const newY = -loc.y - (a.y - b.y);
+        const {lng, lat} = lngLatFromEqualEarthXY(newX, -newY);
         this.setCenter(new LngLat(lng, lat));
         if (this._helper._renderWorldCopies) {
             this.setCenter(this.center.wrap());
@@ -316,14 +327,19 @@ export class EqualEarthTransform implements ITransform {
     }
 
     locationToScreenPoint(lnglat: LngLat, terrain?: Terrain): Point {
+        // Paper-convention y-up result -> y-down world before it meets the
+        // pixel matrices (see `EqualEarthCoordinate`).
+        const loc = equalEarthXYFromLngLat(lnglat.lng, lnglat.lat);
+        const coord: EqualEarthCoordinate = {x: loc.x, y: -loc.y};
         return terrain ?
-            this.coordinatePoint(equalEarthXYFromLngLat(lnglat.lng, lnglat.lat), terrain.getElevationForLngLat(lnglat, this), this._pixelMatrix3D) :
-            this.coordinatePoint(equalEarthXYFromLngLat(lnglat.lng, lnglat.lat));
+            this.coordinatePoint(coord, terrain.getElevationForLngLat(lnglat, this), this._pixelMatrix3D) :
+            this.coordinatePoint(coord);
     }
 
     screenPointToLocation(p: Point, terrain?: Terrain): LngLat {
         const coord = this.screenPointToEqualEarthCoordinate(p, terrain);
-        const {lng, lat} = lngLatFromEqualEarthXY(coord.x, coord.y);
+        // `coord` is y-down unit-world; the paper-convention inverse wants y-up.
+        const {lng, lat} = lngLatFromEqualEarthXY(coord.x, -coord.y);
         return new LngLat(lng, lat);
     }
 
@@ -352,7 +368,9 @@ export class EqualEarthTransform implements ITransform {
             if (coordinate != null) {
                 const lngLat = coordinate.toLngLat();
                 const {x, y} = equalEarthXYFromLngLat(lngLat.lng, lngLat.lat);
-                return {x, y, z: coordinate.z};
+                // Negated y: must return the same y-down unit-world convention
+                // as the AtZ path below (see `EqualEarthCoordinate`).
+                return {x, y: -y, z: coordinate.z};
             }
         }
         return this.screenPointToEqualEarthCoordinateAtZ(p);
@@ -587,6 +605,14 @@ export class EqualEarthTransform implements ITransform {
         this._viewProjMatrix = m;
         this._invViewProjMatrix = mat4.invert([], m);
 
+        // The equalEarthMatrix transforms y-down *unit* Equal Earth coordinates
+        // (the ones the equal-earth shader computes per-vertex) to clip space --
+        // the same role mercator's `mercatorMatrix` plays for mercator [0..1]
+        // coordinates. It is per-frame, not per-tile, so the f32 copy for the
+        // shader uniform is derived once here rather than in getProjectionData.
+        this._equalEarthMatrix = mat4.scale([], this._viewProjMatrix, [this.worldSize, this.worldSize, this.worldSize]);
+        this._equalEarthMatrix32f = new Float32Array(this._equalEarthMatrix);
+
         const cameraPos: vec4 = [0, 0, -1, 1];
         vec4.transformMat4(cameraPos, cameraPos, this._invViewProjMatrix);
         this._cameraPosition = [
@@ -668,30 +694,43 @@ export class EqualEarthTransform implements ITransform {
 
     lngLatToCameraDepth(lngLat: LngLat, elevation: number): number {
         const coord = equalEarthXYFromLngLat(lngLat.lng, lngLat.lat);
-        const p = [coord.x * this.worldSize, coord.y * this.worldSize, elevation, 1] as vec4;
+        // Negated y: `_viewProjMatrix` consumes y-down world coordinates.
+        const p = [coord.x * this.worldSize, -coord.y * this.worldSize, elevation, 1] as vec4;
         vec4.transformMat4(p, p, this._viewProjMatrix);
         return (p[2] / p[3]);
     }
 
     getProjectionData(params: ProjectionDataParams): RendererProjectionData {
-        const {overscaledTileID, aligned, applyTerrainMatrix} = params;
+        const {overscaledTileID, aligned, applyTerrainMatrix, applyGlobeMatrix} = params;
         const mercatorTileCoordinates = this._helper.getMercatorTileCoordinates(overscaledTileID);
         const tilePosMatrix = overscaledTileID ? this.calculatePosMatrix(overscaledTileID, aligned, true) : null;
 
-        let mainMatrix: Mat4f32;
+        // Unlike mercator, an Equal Earth tile's on-screen footprint is not an
+        // affine image of its mercator footprint -- the bending happens
+        // per-vertex in the shader -- so mainMatrix is the whole-world
+        // equalEarthMatrix consuming the shader's y-down unit EE coordinates,
+        // not a per-tile matrix. The per-tile mercator pos matrix goes in
+        // fallbackMatrix, which is its documented purpose (Stage C's
+        // projection blend will mix toward it).
+        let fallbackMatrix: Mat4f32;
         if (overscaledTileID?.terrainRttPosMatrix32f && applyTerrainMatrix) {
-            mainMatrix = overscaledTileID.terrainRttPosMatrix32f;
+            fallbackMatrix = overscaledTileID.terrainRttPosMatrix32f;
         } else if (tilePosMatrix) {
-            mainMatrix = tilePosMatrix; // This matrix should be float32
+            fallbackMatrix = tilePosMatrix; // This matrix should be float32
         } else {
-            mainMatrix = createIdentityMat4f32();
+            fallbackMatrix = createIdentityMat4f32();
         }
         return {
-            mainMatrix, // Might be set to a custom matrix by different projections.
+            mainMatrix: this._equalEarthMatrix32f,
             tileMercatorCoords: mercatorTileCoordinates,
             clippingPlane: [0, 0, 0, 0],
-            projectionTransition: 0.0, // Range 0..1, where 0 is mercator, 1 is another projection, mostly globe.
-            fallbackMatrix: mainMatrix,
+            // Mirrors vertical_perspective_transform.ts: 1 marks this renderer
+            // state as fully "the projection", not mercator. The equal-earth
+            // shader itself never reads u_projection_transition (no Stage-A
+            // blend), and the other GLSL consumers are all #ifdef GLOBE, so
+            // this only drives the TS-side sky/atmosphere blends.
+            projectionTransition: applyGlobeMatrix ? 1 : 0,
+            fallbackMatrix,
         };
     }
 
@@ -746,6 +785,12 @@ export class EqualEarthTransform implements ITransform {
     }
 
     getProjectionDataForCustomLayer(applyGlobeMatrix: boolean = true): CustomLayerProjectionData {
+        // Custom layers stay mercator-positioned in Stage A (both matrices are
+        // overridden below with the mercator-scaled tile matrix): custom layers
+        // run their own shaders on mercator [0..1] inputs and cannot consume
+        // the Equal Earth mainMatrix, so misplacement relative to the EE base
+        // map is a known, deliberate Stage-A defect -- same class as symbol
+        // placement.
         const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
         const rendererProjectionData = this.getProjectionData({overscaledTileID: tileID, applyGlobeMatrix});
         const tileMatrix = calculateTileMatrix(tileID, this.worldSize);
@@ -771,7 +816,11 @@ export class EqualEarthTransform implements ITransform {
         };
     }
 
-    getFastPathSimpleProjectionMatrix(tileID: OverscaledTileID): mat4 {
-        return this.calculatePosMatrix(tileID);
+    getFastPathSimpleProjectionMatrix(_tileID: OverscaledTileID): mat4 {
+        // Offering the per-tile mercator matrix here would let symbol
+        // placement (src/symbol/placement.ts) project anchors with a bare
+        // matrix multiply, bypassing the Equal Earth shader positioning.
+        // Follow VerticalPerspectiveTransform's precedent: no fast path.
+        return undefined;
     }
 }
