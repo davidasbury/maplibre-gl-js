@@ -341,15 +341,18 @@ export class EqualEarthTransform implements ITransform {
     }
 
     screenPointToEqualEarthCoordinate(p: Point, terrain?: Terrain): EqualEarthCoordinate {
-        // terrain.pointCoordinate returns a real MercatorCoordinate (DEM data
-        // is mercator-tiled, not Equal-Earth-tiled). Terrain support is a
-        // non-goal for this projection, so this branch stays structurally
-        // present (don't crash) but is unverified here, not a place to invent
-        // real support.
+        // terrain.pointCoordinate returns a MercatorCoordinate (DEM data is
+        // mercator-tiled, not Equal-Earth-tiled), so it must be re-expressed
+        // in Equal Earth space before returning — callers feed x/y straight
+        // into lngLatFromEqualEarthXY. Terrain support overall is a non-goal
+        // for this projection and this branch is unverified beyond that
+        // coordinate-space conversion.
         if (terrain) {
             const coordinate = terrain.pointCoordinate(p);
             if (coordinate != null) {
-                return coordinate;
+                const lngLat = coordinate.toLngLat();
+                const {x, y} = equalEarthXYFromLngLat(lngLat.lng, lngLat.lat);
+                return {x, y, z: coordinate.z};
             }
         }
         return this.screenPointToEqualEarthCoordinateAtZ(p);
