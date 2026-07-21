@@ -19,12 +19,19 @@ import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld} from '../equal_ear
  *
  * Unlike `projectToWorldCoordinates` (mercator), this does not clamp latitude first:
  * the Equal Earth forward math is well-defined at the poles themselves (see its own tests/fixture).
+ * `lambda0` (Stage B step 8, default 0 for pre-existing call sites): the
+ * central meridian, passed straight through to `equalEarthWorldFromLngLat` —
+ * see that function's doc comment and
+ * docs/resources/2026-07-20-stage-b-step8-dynamic-lambda0-design.md (outer
+ * project) for the full design.
  * @param worldSize - Equal Earth world size computed from zoom level and tile size.
  * @param lnglat - The location to convert.
+ * @param lambda0 - The central meridian in degrees (≡ `center.lng` at every
+ * real call site).
  * @returns Point
  */
-export function projectToEqualEarthWorldCoordinates(worldSize: number, lnglat: LngLat): Point {
-    const {x, y} = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat);
+export function projectToEqualEarthWorldCoordinates(worldSize: number, lnglat: LngLat, lambda0: number = 0): Point {
+    const {x, y} = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat, lambda0);
     return new Point(x * worldSize, y * worldSize);
 }
 
@@ -34,11 +41,15 @@ export function projectToEqualEarthWorldCoordinates(worldSize: number, lnglat: L
  *
  * Inverse of `projectToEqualEarthWorldCoordinates`, including its unit-square
  * y-down world convention (see the note there).
+ * `lambda0` (Stage B step 8, default 0): see `projectToEqualEarthWorldCoordinates`
+ * above.
  * @param worldSize - Equal Earth world size computed from zoom level and tile size.
  * @param point - World coordinate.
+ * @param lambda0 - The central meridian in degrees (≡ `center.lng` at every
+ * real call site).
  * @returns LngLat
  */
-export function unprojectFromEqualEarthWorldCoordinates(worldSize: number, point: Point): LngLat {
-    const {lng, lat} = lngLatFromEqualEarthWorld(point.x / worldSize, point.y / worldSize);
+export function unprojectFromEqualEarthWorldCoordinates(worldSize: number, point: Point, lambda0: number = 0): LngLat {
+    const {lng, lat} = lngLatFromEqualEarthWorld(point.x / worldSize, point.y / worldSize, lambda0);
     return new LngLat(lng, lat);
 }
