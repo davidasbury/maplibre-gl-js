@@ -12,7 +12,7 @@ import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld} from '../equal_ear
 import {projectToEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {EXTENT} from '../../data/extent.ts';
 import {TransformHelper} from '../transform_helper.ts';
-import {MercatorCoveringTilesDetailsProvider} from './mercator_covering_tiles_details_provider.ts';
+import {EqualEarthCoveringTilesDetailsProvider} from './equal_earth_covering_tiles_details_provider.ts';
 import {Frustum} from '../../util/primitives/frustum.ts';
 import {fastInvertProjMat4} from '../../util/fast_maths.ts';
 
@@ -270,7 +270,11 @@ export class EqualEarthTransform implements ITransform {
             calcMatrices: () => this._calcMatrices(),
             defaultConstrain: (center, zoom) => { return this.defaultConstrain(center, zoom); }
         }, options);
-        this._coveringTilesDetailsProvider = new MercatorCoveringTilesDetailsProvider();
+        // Stage A step 6 ("Covering tiles v1"): EE-aware naive-bbox provider.
+        // See equal_earth_covering_tiles_details_provider.ts and
+        // docs/resources/2026-07-20-stage-a-step6-covering-tiles.md (outer
+        // project) for the design. Replaces the step-5 mercator placeholder.
+        this._coveringTilesDetailsProvider = new EqualEarthCoveringTilesDetailsProvider();
     }
 
     public clone(): ITransform {

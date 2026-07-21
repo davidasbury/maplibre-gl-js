@@ -40,29 +40,46 @@
         graticule.features.push({type: 'Feature', properties: {}, geometry: {type: 'LineString', coordinates: coords}});
     }
 
+    // Step 6 sweep support: read center/zoom from the URL query string
+    // (?lng=&lat=&zoom=) so a headless-render sweep can drive many positions
+    // without editing this file per shot. Defaults match the original Demo A
+    // baseline. A `?source=demotiles` query param switches the style to the
+    // real demotiles.maplibre.org basemap (network permitting) with the
+    // equal-earth projection applied, per step 6's "demotiles attempt" gate.
+    const params = new URLSearchParams(window.location.search);
+    const centerLng = params.has('lng') ? parseFloat(params.get('lng')) : 0;
+    const centerLat = params.has('lat') ? parseFloat(params.get('lat')) : 0;
+    const zoom = params.has('zoom') ? parseFloat(params.get('zoom')) : 1.4;
+    const useDemotiles = params.get('source') === 'demotiles';
+
+    const localStyle = {
+        version: 8,
+        projection: {type: 'equal-earth'},
+        sources: {
+            land: {
+                type: 'geojson',
+                data: '../bench/data/naturalearth-land.json'
+            },
+            graticule: {
+                type: 'geojson',
+                data: graticule
+            }
+        },
+        layers: [
+            {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+            {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8', 'fill-outline-color': '#6b8f5a'}},
+            {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+        ]
+    };
+
     const map = new maplibregl.Map({
         container: 'map',
-        style: {
-            version: 8,
-            projection: {type: 'equal-earth'},
-            sources: {
-                land: {
-                    type: 'geojson',
-                    data: '../bench/data/naturalearth-land.json'
-                },
-                graticule: {
-                    type: 'geojson',
-                    data: graticule
-                }
-            },
-            layers: [
-                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
-                {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8', 'fill-outline-color': '#6b8f5a'}},
-                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
-            ]
-        },
-        center: [0, 0],
-        zoom: 1.4
+        style: useDemotiles ? 'https://demotiles.maplibre.org/style.json' : localStyle,
+        // A query-param branch injecting the projection into the remote
+        // style, rather than hand-editing it long-term into this page.
+        transformStyle: useDemotiles ? (_prev, next) => ({...next, projection: {type: 'equal-earth'}}) : undefined,
+        center: [centerLng, centerLat],
+        zoom
     });
     window.map = map;
 </script>
