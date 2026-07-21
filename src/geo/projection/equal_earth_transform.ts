@@ -8,7 +8,7 @@ import {interpolates} from '@maplibre/maplibre-gl-style-spec';
 import {type PointProjection, xyTransformMat4} from '../../symbol/projection.ts';
 import {LngLatBounds} from '../lng_lat_bounds.ts';
 import {getMercatorHorizon, maxMercatorHorizonAngle, cameraMercatorCoordinateFromCenterAndRotation, calculateTileMatrix} from './mercator_utils.ts';
-import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld} from '../equal_earth_coordinate.ts';
+import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld, equalEarthXScaleAtLat, latFromEqualEarthWorldY, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
 import {projectToEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {EXTENT} from '../../data/extent.ts';
 import {TransformHelper} from '../transform_helper.ts';
@@ -315,25 +315,55 @@ export class EqualEarthTransform implements ITransform {
         this._helper.recalculateZoomAndCenter(elevation);
     }
 
+    /**
+     * Stage B step 8 closed-form solve (replaces the Stage A world-coordinate
+     * subtraction, which assumed a center-independent, fixed-lambda0
+     * mapping -- no longer true once lambda0 tracks center.lng). See
+     * docs/resources/2026-07-20-stage-b-step8-dynamic-lambda0-design.md
+     * (outer project), "setLocationAtPoint closed-form solve", for the
+     * derivation. `a`/`b` are unit-world coordinates from the matrix
+     * pipeline (built from the CURRENT, pre-update center/lambda0) for the
+     * target screen point and the current center screen point respectively;
+     * their difference is a frame-independent screen-space-derived world
+     * delta (the old center's lambda0 cancels out of a subtraction, so this
+     * still works even though it's measured in the soon-to-be-replaced
+     * frame).
+     *
+     * Vertical is lambda-free (world-y depends only on latitude), so it
+     * inverts directly via `latFromEqualEarthWorldY`. Horizontal exploits the
+     * lambda0-tracking invariant that center always sits at unit x 0.5: solve
+     * for the new center longitude (lambda0') that reproduces the observed
+     * x-offset for `lnglat` at ITS OWN latitude's x-scale
+     * (`equalEarthXScaleAtLat`) -- not the new center's latitude, since it is
+     * specifically `lnglat` that must land exactly on `point`.
+     */
     setLocationAtPoint(lnglat: LngLat, point: Point): void {
         const z = mercatorZfromAltitude(this.elevation, this.center.lat);
         const a = this.screenPointToEqualEarthCoordinateAtZ(point, z);
         const b = this.screenPointToEqualEarthCoordinateAtZ(this.centerPoint, z);
-        // `a`/`b` come from the matrix pipeline and `loc` from the forward
-        // projection -- all three are the same unit-square world convention,
-        // so the offset arithmetic mixes them directly.
-        const loc = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat);
-        const newX = loc.x - (a.x - b.x);
-        const newY = loc.y - (a.y - b.y);
-        const {lng, lat} = lngLatFromEqualEarthWorld(newX, newY);
-        this.setCenter(new LngLat(lng, lat));
+
+        // Vertical: y_c' = y_unit(lat_loc) - (a.y - b.y), then invert.
+        // lambda0 is irrelevant to y (equalEarthWorldFromLngLat's default 0
+        // is fine -- y never depends on it), so only .y is used here.
+        const locY = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat).y;
+        const newCenterY = clamp(locY - (a.y - b.y), EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE);
+        const newCenterLat = latFromEqualEarthWorldY(newCenterY);
+
+        // Horizontal: 0.5 + (lng_loc - lambda0') * scale - 0.5 = a.x - b.x
+        // => lambda0' = lng_loc - (a.x - b.x) / scale. Division is always
+        // safe: equalEarthXScaleAtLat is > 0 everywhere (EE's poles are
+        // lines, not points -- no singularity).
+        const scale = equalEarthXScaleAtLat(lnglat.lat);
+        const newCenterLng = lnglat.lng - (a.x - b.x) / scale;
+
+        this.setCenter(new LngLat(newCenterLng, newCenterLat));
         if (this._helper._renderWorldCopies) {
             this.setCenter(this.center.wrap());
         }
     }
 
     locationToScreenPoint(lnglat: LngLat, terrain?: Terrain): Point {
-        const coord: EqualEarthCoordinate = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat);
+        const coord: EqualEarthCoordinate = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat, this.center.lng);
         return terrain ?
             this.coordinatePoint(coord, terrain.getElevationForLngLat(lnglat, this), this._pixelMatrix3D) :
             this.coordinatePoint(coord);
@@ -341,7 +371,7 @@ export class EqualEarthTransform implements ITransform {
 
     screenPointToLocation(p: Point, terrain?: Terrain): LngLat {
         const coord = this.screenPointToEqualEarthCoordinate(p, terrain);
-        const {lng, lat} = lngLatFromEqualEarthWorld(coord.x, coord.y);
+        const {lng, lat} = lngLatFromEqualEarthWorld(coord.x, coord.y, this.center.lng);
         return new LngLat(lng, lat);
     }
 
@@ -371,7 +401,7 @@ export class EqualEarthTransform implements ITransform {
                 const lngLat = coordinate.toLngLat();
                 // Same unit-square y-down world convention as the AtZ path
                 // below (see `EqualEarthCoordinate`).
-                const {x, y} = equalEarthWorldFromLngLat(lngLat.lng, lngLat.lat);
+                const {x, y} = equalEarthWorldFromLngLat(lngLat.lng, lngLat.lat, this.center.lng);
                 return {x, y, z: coordinate.z};
             }
         }
@@ -558,7 +588,14 @@ export class EqualEarthTransform implements ITransform {
         if (!this._helper._height) return;
 
         const offset = this.centerOffset;
-        const point = projectToEqualEarthWorldCoordinates(this.worldSize, this.center);
+        // lambda0 === center.lng means Delta-lambda is always exactly 0 here,
+        // so point.x is always exactly 0.5 * worldSize -- the camera never
+        // translates horizontally (see the design doc's "Core decision").
+        // Passed explicitly anyway (rather than hardcoding 0.5) so this stays
+        // correct if that invariant is ever revisited, and so the call site
+        // documents its own lambda0 rather than relying on the reader
+        // knowing the identity holds.
+        const point = projectToEqualEarthWorldCoordinates(this.worldSize, this.center, this.center.lng);
         const x = point.x, y = point.y;
         this._helper._pixelPerMeter = mercatorZfromAltitude(1, this.center.lat) * this.worldSize;
 
@@ -695,7 +732,7 @@ export class EqualEarthTransform implements ITransform {
     }
 
     lngLatToCameraDepth(lngLat: LngLat, elevation: number): number {
-        const coord = equalEarthWorldFromLngLat(lngLat.lng, lngLat.lat);
+        const coord = equalEarthWorldFromLngLat(lngLat.lng, lngLat.lat, this.center.lng);
         const p = [coord.x * this.worldSize, coord.y * this.worldSize, elevation, 1] as vec4;
         vec4.transformMat4(p, p, this._viewProjMatrix);
         return (p[2] / p[3]);

@@ -14,8 +14,14 @@ import type {LngLatBounds} from '../lng_lat_bounds.ts';
 
 /**
  * @internal
- * Stage A only (fixed central meridian 0) — Stage B is where this gets
- * rewired for dynamic λ0 dragging. `getMercatorHorizon` and
+ * Stage B step 8: rewired for dynamic λ0 (see
+ * docs/resources/2026-07-20-stage-b-step8-dynamic-lambda0-design.md, outer
+ * project). `handleEaseTo`/`handleFlyTo` pass `tr.center.lng` at call time --
+ * known accepted wart (per the design doc): `from`/`delta` are computed once
+ * in the then-current rotating frame, so long eases may follow slightly odd
+ * paths, but they still land exactly, because every animation frame ends in
+ * `setLocationAtPoint`, which solves in the live (current) frame regardless
+ * of what frame `from`/`delta` were captured in. `getMercatorHorizon` and
  * `cameraForBoxAndBearing` (via `camera_helper.ts`) are reused unchanged from
  * mercator: neither has an Equal Earth-specific equivalent yet, and both are
  * placeholders with no real consequence until pitch/bounds-fitting are
@@ -100,8 +106,13 @@ export class EqualEarthCameraHelper implements ICameraHelper {
         );
         normalizeCenter(tr, center);
 
-        const from = projectToEqualEarthWorldCoordinates(tr.worldSize, locationAtOffset);
-        const delta = projectToEqualEarthWorldCoordinates(tr.worldSize, center).sub(from);
+        // lambda0 = tr.center.lng captured once, at call time, in the
+        // then-current (pre-animation) frame -- see the class doc comment.
+        // `normalizeCenter` above already put `center` within 180 degrees of
+        // this same lambda0, so `delta` is always the short way around.
+        const lambda0 = tr.center.lng;
+        const from = projectToEqualEarthWorldCoordinates(tr.worldSize, locationAtOffset, lambda0);
+        const delta = projectToEqualEarthWorldCoordinates(tr.worldSize, center, lambda0).sub(from);
 
         const finalScale = zoomScale(endZoom - startZoom);
         isZooming = (endZoom !== startZoom);
@@ -133,7 +144,7 @@ export class EqualEarthCameraHelper implements ICameraHelper {
                     Math.min(2, finalScale) :
                     Math.max(0.5, finalScale);
                 const speedup = Math.pow(base, 1 - k);
-                const newCenter = unprojectFromEqualEarthWorldCoordinates(tr.worldSize, from.add(delta.mult(k * speedup)).mult(scale));
+                const newCenter = unprojectFromEqualEarthWorldCoordinates(tr.worldSize, from.add(delta.mult(k * speedup)).mult(scale), lambda0);
                 tr.setLocationAtPoint(tr.renderWorldCopies ? newCenter.wrap() : newCenter, pointAtOffset);
             }
         };
@@ -160,9 +171,12 @@ export class EqualEarthCameraHelper implements ICameraHelper {
 
         normalizeCenter(tr, targetCenter);
 
+        // See handleEaseTo's comment: lambda0 captured once, at call time;
+        // normalizeCenter already put targetCenter within 180 degrees of it.
+        const lambda0 = tr.center.lng;
         const startWorldSize = tr.worldSize;
-        const from = projectToEqualEarthWorldCoordinates(startWorldSize, options.locationAtOffset);
-        const delta = projectToEqualEarthWorldCoordinates(startWorldSize, targetCenter).sub(from);
+        const from = projectToEqualEarthWorldCoordinates(startWorldSize, options.locationAtOffset, lambda0);
+        const delta = projectToEqualEarthWorldCoordinates(startWorldSize, targetCenter, lambda0).sub(from);
 
         const pixelPathLength = delta.mag();
 
@@ -178,7 +192,7 @@ export class EqualEarthCameraHelper implements ICameraHelper {
             tr.setZoom(k === 1 ? targetZoom : startZoom + scaleZoom(scale));
             const newCenter = k === 1
                 ? targetCenter
-                : unprojectFromEqualEarthWorldCoordinates(startWorldSize, from.add(delta.mult(centerFactor)));
+                : unprojectFromEqualEarthWorldCoordinates(startWorldSize, from.add(delta.mult(centerFactor)), lambda0);
             tr.setLocationAtPoint(tr.renderWorldCopies ? newCenter.wrap() : newCenter, pointAtOffset);
         };
 

@@ -148,4 +148,92 @@ describe('EqualEarthTransform', () => {
             }
         });
     });
+
+    // Stage B step 8: dynamic lambda0 (central meridian tracks center.lng).
+    // See docs/resources/2026-07-20-stage-b-step8-dynamic-lambda0-design.md
+    // (outer project) for the full design and test plan this section
+    // implements.
+    describe('dynamic lambda0 (Stage B step 8)', () => {
+        describe('center-pin invariant', () => {
+            test('the map center always lands on the screen center, for several center.lng', () => {
+                for (const lng of [0, 90, 180, -120]) {
+                    const transform = createTransform(3, new LngLat(lng, 0));
+                    const p = transform.locationToScreenPoint(new LngLat(lng, 0));
+                    expect(p.x).toBeCloseTo(250, 6);
+                    expect(p.y).toBeCloseTo(250, 6);
+                }
+            });
+        });
+
+        describe('fixed outline / rotating world', () => {
+            test('locationToScreenPoint(center +-180) is identical across different center.lng at the same zoom', () => {
+                // The outline (the screen position of the +-180-from-center
+                // meridian) must not move when the world rotates under it --
+                // this is the structural, by-construction consequence of
+                // lambda0 === center.lng (see the design doc's "Core
+                // decision"), not a special case.
+                const lats = [0, 30, -30, 60, -60];
+                let reference: Point[] | null = null;
+                for (const centerLng of [0, 90, 180, -120]) {
+                    const transform = createTransform(3, new LngLat(centerLng, 0));
+                    const points = lats.flatMap(lat => [
+                        transform.locationToScreenPoint(new LngLat(centerLng + 180, lat)),
+                        transform.locationToScreenPoint(new LngLat(centerLng - 180, lat)),
+                    ]);
+                    if (reference === null) {
+                        reference = points;
+                    } else {
+                        for (let i = 0; i < points.length; i++) {
+                            expect(points[i].x).toBeCloseTo(reference[i].x, 6);
+                            expect(points[i].y).toBeCloseTo(reference[i].y, 6);
+                        }
+                    }
+                }
+            });
+        });
+
+        describe('setLocationAtPoint end-to-end (closed-form solve)', () => {
+            // Proof by construction, not by reasoning about the closed form:
+            // after the call, locationToScreenPoint(lnglat) must return the
+            // requested screen point, for several (lnglat, point) pairs
+            // including ones that cross the antimeridian relative to the
+            // transform's starting center.
+            const cases: Array<{start: LngLat; lnglat: LngLat; point: Point}> = [
+                {start: new LngLat(0, 0), lnglat: new LngLat(13, 10), point: new Point(15, 45)},
+                {start: new LngLat(170, 0), lnglat: new LngLat(-170, 5), point: new Point(300, 200)},
+                {start: new LngLat(-170, 0), lnglat: new LngLat(170, -20), point: new Point(100, 400)},
+                {start: new LngLat(90, 30), lnglat: new LngLat(-179, -45), point: new Point(50, 50)},
+            ];
+
+            for (const {start, lnglat, point} of cases) {
+                test(`start center ${start.lng},${start.lat} -> place ${lnglat.lng},${lnglat.lat} at (${point.x},${point.y})`, () => {
+                    const transform = createTransform(4, start);
+                    transform.setLocationAtPoint(lnglat, point);
+                    const p = transform.locationToScreenPoint(lnglat);
+                    expect(p.x).toBeCloseTo(point.x, 5);
+                    expect(p.y).toBeCloseTo(point.y, 5);
+                });
+            }
+        });
+
+        describe('screen <-> location round trip with dynamic lambda0', () => {
+            const locations = [
+                new LngLat(0, 0),
+                new LngLat(30, 45),
+                new LngLat(-30, 45),
+                new LngLat(150, -60),
+            ];
+
+            test('round trip holds for center.lng in {0, 90, 180}', () => {
+                for (const centerLng of [0, 90, 180]) {
+                    const transform = createTransform(3, new LngLat(centerLng, 0));
+                    for (const location of locations) {
+                        const roundTripped = transform.screenPointToLocation(transform.locationToScreenPoint(location));
+                        expect(roundTripped.lng).toBeCloseTo(location.lng, 6);
+                        expect(roundTripped.lat).toBeCloseTo(location.lat, 6);
+                    }
+                }
+            });
+        });
+    });
 });
