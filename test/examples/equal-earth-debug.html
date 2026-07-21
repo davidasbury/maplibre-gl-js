@@ -52,35 +52,146 @@
     const zoom = params.has('zoom') ? parseFloat(params.get('zoom')) : 1.4;
     const useDemotiles = params.get('source') === 'demotiles';
 
-    const localStyle = {
-        version: 8,
-        projection: {type: 'equal-earth'},
-        sources: {
-            land: {
-                type: 'geojson',
-                data: '../bench/data/naturalearth-land.json'
-            },
-            graticule: {
-                type: 'geojson',
-                data: graticule
-            }
-        },
-        layers: [
-            {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
-            {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8', 'fill-outline-color': '#6b8f5a'}},
-            {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
-        ]
-    };
+    // Step 7: `?choropleth=1` swaps the flat land fill for a bucketed
+    // choropleth layered over the same local style (background + graticule
+    // unchanged). Data source: this repo has no admin-0/countries GeoJSON
+    // (checked test/bench/** and docs/assets/** -- only regional single-
+    // place files exist, docs/assets/us_states.geojson and
+    // docs/assets/rwanda-provinces.geojson, neither global), so polygons are
+    // instead derived from the existing naturalearth-land.json land layer,
+    // bucketed by a deterministic per-feature planar-shoelace area estimate
+    // (5 quantile classes). Honest for demonstrating equal-area RENDERING
+    // even without real per-country statistics attached to the polygons.
+    const useChoropleth = params.get('choropleth') === '1';
 
+    // Shoelace ring area in raw degrees^2 -- a relative ordering metric for
+    // bucketing only, not a true geodesic area (fine for a rendering demo).
+    function ringArea(ring) {
+        let sum = 0;
+        for (let i = 0; i < ring.length - 1; i++) {
+            const [x1, y1] = ring[i];
+            const [x2, y2] = ring[i + 1];
+            sum += (x1 * y2) - (x2 * y1);
+        }
+        return Math.abs(sum) / 2;
+    }
+    function polygonArea(rings) {
+        let area = ringArea(rings[0]);
+        for (let i = 1; i < rings.length; i++) area -= ringArea(rings[i]);
+        return Math.max(area, 0);
+    }
+    function featureArea(feature) {
+        const geometry = feature.geometry;
+        if (geometry.type === 'Polygon') return polygonArea(geometry.coordinates);
+        if (geometry.type === 'MultiPolygon') return geometry.coordinates.reduce((sum, poly) => sum + polygonArea(poly), 0);
+        return 0;
+    }
+
+    // Sequential 5-class ramp (ColorBrewer YlOrRd) plus thin dark outlines.
+    const CHOROPLETH_RAMP = ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'];
+
+    // Deterministic FNV-1a-style hash of a feature's first coordinate, used
+    // to assign its bucket independently of polygon size. (Area-quantile
+    // bucketing was tried first: land-polygon areas here span ~8 orders of
+    // magnitude, so count-based quantiles put every continent in the same
+    // top bucket and only tiny islands spread across the rest -- technically
+    // deterministic but a visually monotonous demo. Hash-of-coordinate has
+    // no such correlation.)
+    function hashFeature(feature) {
+        const geometry = feature.geometry;
+        const ring = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates[0][0];
+        const [lng, lat] = ring[0];
+        const str = `${lng.toFixed(4)},${lat.toFixed(4)}`;
+        let hash = 2166136261;
+        for (let i = 0; i < str.length; i++) {
+            hash ^= str.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        return Math.abs(hash);
+    }
+
+    async function buildChoroplethSource() {
+        const land = await (await fetch('../bench/data/naturalearth-land.json')).json();
+        return {
+            type: 'FeatureCollection',
+            features: land.features.map((feature) => ({...feature, properties: {...feature.properties, bucket: hashFeature(feature) % 5, area: featureArea(feature)}}))
+        };
+    }
+
+    let localStyle;
+    if (!useDemotiles && useChoropleth) {
+        localStyle = {
+            version: 8,
+            projection: {type: 'equal-earth'},
+            sources: {
+                choropleth: {
+                    type: 'geojson',
+                    data: await buildChoroplethSource()
+                },
+                graticule: {
+                    type: 'geojson',
+                    data: graticule
+                }
+            },
+            layers: [
+                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                {
+                    id: 'choropleth-fill',
+                    type: 'fill',
+                    source: 'choropleth',
+                    paint: {
+                        'fill-color': ['step', ['get', 'bucket'], CHOROPLETH_RAMP[0], 1, CHOROPLETH_RAMP[1], 2, CHOROPLETH_RAMP[2], 3, CHOROPLETH_RAMP[3], 4, CHOROPLETH_RAMP[4]],
+                        'fill-opacity': 0.9
+                    }
+                },
+                {id: 'choropleth-outline', type: 'line', source: 'choropleth', paint: {'line-color': '#4d4d4d', 'line-width': 0.4}},
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+            ]
+        };
+    } else if (!useDemotiles) {
+        localStyle = {
+            version: 8,
+            projection: {type: 'equal-earth'},
+            sources: {
+                land: {
+                    type: 'geojson',
+                    data: '../bench/data/naturalearth-land.json'
+                },
+                graticule: {
+                    type: 'geojson',
+                    data: graticule
+                }
+            },
+            layers: [
+                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8', 'fill-outline-color': '#6b8f5a'}},
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+            ]
+        };
+    }
+
+    // `transformStyle` is a `setStyle()` option, not a Map constructor
+    // option: the constructor's own internal initial `this.setStyle(...)`
+    // call builds a fresh options object that never forwards a
+    // `transformStyle` given alongside `style` at the top level, so passing
+    // it here (as this page originally did) was silently ignored -- no
+    // warning, since this page isn't type-checked -- and demotiles rendered
+    // as plain mercator with no projection field at all. Fix: construct
+    // without an initial style, then call setStyle() explicitly so
+    // transformStyle is actually read (matches the documented
+    // map.setStyle(url, {transformStyle}) usage).
     const map = new maplibregl.Map({
         container: 'map',
-        style: useDemotiles ? 'https://demotiles.maplibre.org/style.json' : localStyle,
-        // A query-param branch injecting the projection into the remote
-        // style, rather than hand-editing it long-term into this page.
-        transformStyle: useDemotiles ? (_prev, next) => ({...next, projection: {type: 'equal-earth'}}) : undefined,
         center: [centerLng, centerLat],
         zoom
     });
+    if (useDemotiles) {
+        map.setStyle('https://demotiles.maplibre.org/style.json', {
+            transformStyle: (_prev, next) => ({...next, projection: {type: 'equal-earth'}})
+        });
+    } else {
+        map.setStyle(localStyle);
+    }
     window.map = map;
 </script>
 </body>
