@@ -293,9 +293,35 @@ export class EqualEarthTransform implements ITransform {
     public get inverseProjectionMatrix(): mat4 { return this._invProjMatrix; }
 
     getVisibleUnwrappedCoordinates(tileID: CanonicalTileID): UnwrappedTileID[] {
-        // Stage A: central meridian fixed at 0, nothing to wrap around yet.
-        // World-copy/outline handling becomes real in Stage B.
-        return [new UnwrappedTileID(0, tileID)];
+        // Stage B step 8 (Mechanism 2's world copies): mercator's version,
+        // essentially verbatim (see the design doc) -- it only needs
+        // screenPointToMercatorCoordinate on the viewport corners and
+        // renderWorldCopies, both already available here. The "banana
+        // tiling" fact (design doc) means the floor()-derived wrap range is
+        // correct as-is: Equal Earth's world copies partition every
+        // horizontal line of the projected plane exactly, just like
+        // mercator's do, so the same corner-unprojection logic that finds
+        // "which wrap indices are on screen" for mercator applies unchanged.
+        const result = [new UnwrappedTileID(0, tileID)];
+        if (this._helper._renderWorldCopies) {
+            const utl = this.screenPointToMercatorCoordinate(new Point(0, 0));
+            const utr = this.screenPointToMercatorCoordinate(new Point(this._helper._width, 0));
+            const ubl = this.screenPointToMercatorCoordinate(new Point(this._helper._width, this._helper._height));
+            const ubr = this.screenPointToMercatorCoordinate(new Point(0, this._helper._height));
+            const w0 = Math.floor(Math.min(utl.x, utr.x, ubl.x, ubr.x));
+            const w1 = Math.floor(Math.max(utl.x, utr.x, ubl.x, ubr.x));
+
+            // Add an extra copy of the world on each side to properly render ImageSources and CanvasSources.
+            // Both sources draw outside the tile boundaries of the tile that "contains them" so we need
+            // to add extra copies on both sides in case offscreen tiles need to draw into on-screen ones.
+            const extraWorldCopy = 1;
+
+            for (let w = w0 - extraWorldCopy; w <= w1 + extraWorldCopy; w++) {
+                if (w === 0) continue;
+                result.push(new UnwrappedTileID(w, tileID));
+            }
+        }
+        return result;
     }
 
     getCameraFrustum(): Frustum {
@@ -741,6 +767,26 @@ export class EqualEarthTransform implements ITransform {
     getProjectionData(params: ProjectionDataParams): RendererProjectionData {
         const {overscaledTileID, aligned, applyTerrainMatrix, applyGlobeMatrix} = params;
         const mercatorTileCoordinates = this._helper.getMercatorTileCoordinates(overscaledTileID);
+        if (overscaledTileID) {
+            // Mechanism 2 (Stage B step 8): fold both world-copy wrap and the
+            // live lambda0 into the shader's recovered lng in one seam,
+            // entirely CPU-side -- zero GLSL changes, zero new uniforms (see
+            // the design doc's "Mechanism 2"). Verified before relying on it
+            // (grepped tileMercatorCoords' non-GLSL consumers): the only ones
+            // are projection_program.ts's uniform-name mapping and
+            // painter.ts's inert [0,0,1,1] placeholder object for tile-less
+            // draws -- nothing reads these four numbers as anything but the
+            // shader uniform, so this is a safe sole seam.
+            // TransformHelper.getMercatorTileCoordinates is canonical-tile-only
+            // (no wrap term); OverscaledTileID.wrap must be added here, or
+            // wrapped world copies would render stacked on top of wrap 0.
+            // Shader-side: lng = (this.x) * 2*PI - PI, so adding `wrap` (a
+            // whole tile-grid turn) shifts lng by wrap*360 degrees, and
+            // subtracting center.lng/360 shifts it by -center.lng degrees --
+            // together giving exactly the unwrapped `lng - lambda0` the
+            // vertex shader's Equal Earth polynomial expects.
+            mercatorTileCoordinates[0] += overscaledTileID.wrap - this.center.lng / 360;
+        }
         const tilePosMatrix = overscaledTileID ? this.calculatePosMatrix(overscaledTileID, aligned, true) : null;
 
         // Unlike mercator, an Equal Earth tile's on-screen footprint is not an

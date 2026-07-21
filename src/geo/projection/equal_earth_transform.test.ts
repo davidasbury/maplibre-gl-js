@@ -3,6 +3,7 @@ import Point from '@mapbox/point-geometry';
 import {LngLat} from '../lng_lat.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {projectToEqualEarthWorldCoordinates, unprojectFromEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
+import {OverscaledTileID} from '../../tile/tile_id.ts';
 
 function createTransform(zoom: number = 3, center: LngLat = new LngLat(0, 0)): EqualEarthTransform {
     const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
@@ -233,6 +234,30 @@ describe('EqualEarthTransform', () => {
                         expect(roundTripped.lat).toBeCloseTo(location.lat, 6);
                     }
                 }
+            });
+        });
+
+        describe('getProjectionData (Mechanism 2: render-side lambda0 + wrap seam)', () => {
+            test('tileMercatorCoords x reflects wrap - center.lng/360, for wrap in {-1,0,1} and center.lng in {0,90}', () => {
+                for (const centerLng of [0, 90]) {
+                    const transform = createTransform(3, new LngLat(centerLng, 0));
+                    for (const wrap of [-1, 0, 1]) {
+                        const tileID = new OverscaledTileID(3, wrap, 3, 2, 2);
+                        const data = transform.getProjectionData({overscaledTileID: tileID});
+                        // Base (un-shifted) canonical x from
+                        // TransformHelper.getMercatorTileCoordinates for
+                        // tileID.canonical (x=2, z=3): 2 / 8 = 0.25.
+                        const baseCanonicalX = 2 / 8;
+                        const expectedX = baseCanonicalX + wrap - centerLng / 360;
+                        expect(data.tileMercatorCoords[0]).toBeCloseTo(expectedX, 10);
+                    }
+                }
+            });
+
+            test('null overscaledTileID is untouched ([0,0,1,1], as before)', () => {
+                const transform = createTransform(3, new LngLat(90, 0));
+                const data = transform.getProjectionData({overscaledTileID: null});
+                expect(data.tileMercatorCoords).toEqual([0, 0, 1, 1]);
             });
         });
     });

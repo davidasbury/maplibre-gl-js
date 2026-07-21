@@ -194,12 +194,14 @@ export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDeta
     }
 
     /**
-     * Stage A is single-world-copy (`getVisibleUnwrappedCoordinates` always
-     * renders wrap 0); combined with `allowWorldCopies()` below, `parentWrap`
-     * is always already 0 by the time this runs. East/west antimeridian
-     * coverage is handled by the longitude-window arithmetic in
-     * `getTileBoundingVolume`, not by Mercator's wrap +-1 convention (which
-     * would request tiles Stage A can never actually draw).
+     * Stage B step 8: `allowWorldCopies()` below now returns true, so
+     * `parentWrap` is no longer always 0 -- this matches
+     * `MercatorCoveringTilesDetailsProvider.getWrap` exactly (both just pass
+     * `parentWrap` through unchanged; the shared traversal in
+     * `covering_tiles.ts` is what seeds the initial +-1..+-3 wrap values via
+     * `renderWorldCopies && allowWorldCopies()`). East/west antimeridian
+     * coverage within a single wrap still comes from the longitude-window
+     * arithmetic in `getTileBoundingVolume`, unchanged from Stage A.
      */
     getWrap(_centerCoord: MercatorCoordinate, _tileID: {x: number; y: number; z: number}, parentWrap: number): number {
         return parentWrap;
@@ -219,13 +221,30 @@ export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDeta
     }
 
     /**
-     * Matches Globe's choice: both are bounded, non-repeating world shapes,
-     * unlike Mercator's infinite repeating plane. Consistent with
-     * `getVisibleUnwrappedCoordinates` always rendering a single wrap-0
-     * instance in Stage A.
+     * Stage B step 8 (Mechanism 2): true, matching Mercator now -- Equal
+     * Earth's plane genuinely tiles with repeated world copies (the "banana
+     * tiling" fact in the design doc: shifting lambda by 360 degrees shifts
+     * x by exactly 360*k(phi) at every latitude, so neighboring copies
+     * partition the plane with no overlap or gap). Combined with
+     * `getVisibleUnwrappedCoordinates`'s now-real wrap enumeration, this lets
+     * `renderWorldCopies` actually render copies either side of the seam,
+     * which G1/G2 (fixed outline, seam continuity) depend on.
+     *
+     * KNOWN CAVEAT (not chased further, see design doc's naive-v1 framing):
+     * `getTileBoundingVolume` below decides visibility from a tile's own
+     * geographic lat/lng rectangle against the cached viewport bbox and does
+     * NOT consider `wrap` at all. When multiple wraps are pushed by the
+     * shared traversal, every wrap branch for a given canonical tile gets an
+     * IDENTICAL verdict, so a tile within the geographic window is requested
+     * at every enumerated wrap, not only the wrap(s) actually on screen. This
+     * is over-fetch, not a correctness bug (each requested copy still
+     * renders in its real position via the wrap-aware
+     * `getVisibleUnwrappedCoordinates` + `getProjectionData` shift) -- see
+     * the headless gate results/known-defects list for whether this shows up
+     * as a real problem in practice.
      */
     allowWorldCopies(): boolean {
-        return false;
+        return true;
     }
 
     getTileBoundingVolume(tileID: {x: number; y: number; z: number}, _wrap: number, _elevation: number, _options: CoveringTilesOptionsInternal): IBoundingVolume {
