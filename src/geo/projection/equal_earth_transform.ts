@@ -1,7 +1,7 @@
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {MercatorCoordinate, mercatorZfromAltitude} from '../mercator_coordinate.ts';
 import Point from '@mapbox/point-geometry';
-import {clamp, createMat4f64, degreesToRadians, createIdentityMat4f32, type Mat4f32, type Mat4f64} from '../../util/util.ts';
+import {clamp, createMat4f64, degreesToRadians, createIdentityMat4f32, zoomScale, type Mat4f32, type Mat4f64} from '../../util/util.ts';
 import {type mat2, mat4, vec3, vec4} from 'gl-matrix';
 import {UnwrappedTileID, OverscaledTileID, type CanonicalTileID, calculateTileKey} from '../../tile/tile_id.ts';
 import {interpolates} from '@maplibre/maplibre-gl-style-spec';
@@ -539,13 +539,35 @@ export class EqualEarthTransform implements ITransform {
     }
 
     /**
-     * Stage A: Equal Earth's world isn't a square the way mercator's is, so
-     * there is no lngRange/latRange rectangle to zoom/pan against yet --
-     * outline-aware clamping needs a movable central meridian, which is
-     * Stage B/C. For now this only keeps zoom in range and keeps latitude
-     * from running past the poles; longitude passes through unchanged.
-     * `setMaxBounds` is consequently a known no-op for this projection until
-     * a later stage.
+     * Stage B step 8 (Mechanism 3 -- "zoom-dependent constraint" in the
+     * design doc). Per-axis, both assuming bearing/pitch = 0 (both are 0
+     * everywhere in this project so far -- a recorded limitation, not
+     * solved here; see the design doc).
+     *
+     * Horizontal: lng passes through unchanged. lng IS lambda0, and the
+     * lambda0-tracking design (center always at unit x 0.5, see the "Core
+     * decision" in the design doc) makes east-west void structurally
+     * impossible at any zoom -- the outline sits at a fixed screen distance
+     * from center regardless of lambda0's value. No lngRange clamp, by
+     * design.
+     *
+     * Vertical: content only occupies world-y in
+     * [EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE] (the
+     * pole lines), not the full [0,1] mercator uses. The usable center-y
+     * interval that keeps both edges void-free is
+     * [Y_TOP*ws + h/2, Y_BOT*ws - h/2] (a world size for the REQUESTED zoom,
+     * not the current one -- matches `MercatorTransform.defaultConstrain`'s
+     * own pattern). If that interval is empty (world content shorter than
+     * the viewport -- the low-zoom "full extent fits" regime), no single
+     * center-y keeps both edges void-free at once: hard-lock lat to the
+     * equator (vertical drag does nothing at this zoom; horizontal drag
+     * still rotates the world through the fixed outline -- see the design
+     * doc's owner-review flag on this point). Otherwise clamp center world-y
+     * into the interval and invert via `latFromEqualEarthWorldY` -- poles
+     * lock to the viewport edges, void never enters top/bottom.
+     *
+     * `setMaxBounds` remains a documented no-op for this projection
+     * (unchanged from Stage A).
      */
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {
         const constrainedZoom = clamp(+zoom, this.minZoom, this.maxZoom);
@@ -553,7 +575,20 @@ export class EqualEarthTransform implements ITransform {
         // (unlike mercator's asymptotic blowup), so clamp to the true range
         // here instead of carrying over mercator's tighter MAX_VALID_LATITUDE
         // (85.05 degrees), which would be wrong for this projection.
-        const constrainedLat = clamp(lngLat.lat, -90, 90);
+        let constrainedLat = clamp(lngLat.lat, -90, 90);
+
+        const worldSize = this.tileSize * zoomScale(constrainedZoom);
+        const screenHeight = this.size.y;
+        const minCenterY = EQUAL_EARTH_WORLD_Y_NORTH_POLE * worldSize + screenHeight / 2;
+        const maxCenterY = EQUAL_EARTH_WORLD_Y_SOUTH_POLE * worldSize - screenHeight / 2;
+        if (minCenterY > maxCenterY) {
+            constrainedLat = 0;
+        } else {
+            const centerY = equalEarthWorldFromLngLat(0, constrainedLat).y * worldSize;
+            const clampedCenterY = clamp(centerY, minCenterY, maxCenterY);
+            constrainedLat = latFromEqualEarthWorldY(clampedCenterY / worldSize);
+        }
+
         return {
             center: new LngLat(lngLat.lng, constrainedLat),
             zoom: constrainedZoom

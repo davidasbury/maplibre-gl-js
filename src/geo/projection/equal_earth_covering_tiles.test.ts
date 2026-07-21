@@ -10,6 +10,16 @@ function createTransform(width = 1024, height = 768): EqualEarthTransform {
     return transform;
 }
 
+// NOTE (Stage B step 8): every test below calls setZoom() BEFORE setCenter(),
+// not the more "natural" reverse order. setCenter() re-applies
+// defaultConstrain() immediately, at whatever zoom is current at that
+// instant -- and defaultConstrain's new zoom-dependent vertical clamp
+// (Mechanism 3) hard-locks latitude to 0 whenever the world's content is
+// shorter than the viewport, which is true at this transform's initial zoom
+// (0) for these viewport sizes. Calling setCenter(highLat) first would
+// silently clamp it to 0 right there, before setZoom ever runs -- setZoom
+// first (matching handleJumpToCenterZoom's own order) avoids that entirely.
+
 function keyOf(tile: OverscaledTileID): string {
     return `${tile.canonical.z}/${tile.canonical.x}/${tile.canonical.y}`;
 }
@@ -18,16 +28,16 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
     describe('full-world views cover every tile at the covering zoom', () => {
         test('z0 view (tileSize matched to transform) covers just the root tile', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(0, 0));
             transform.setZoom(0);
+            transform.setCenter(new LngLat(0, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 0});
             expect(tiles).toEqual([new OverscaledTileID(0, 0, 0, 0, 0)]);
         });
 
         test('z1 full-world view covers all 4 tiles', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(0, 0));
             transform.setZoom(0);
+            transform.setCenter(new LngLat(0, 0));
             // options.tileSize < transform.tileSize bumps the covering zoom
             // above the camera zoom (scaleZoom(512/256) = 1).
             const tiles = coveringTiles(transform, {tileSize: 256, minzoom: 0, maxzoom: 1});
@@ -42,8 +52,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
 
         test('z2 full-world view covers all 16 tiles, bottom (south pole) row included -- the white-strip regression test', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(0, 0));
             transform.setZoom(0);
+            transform.setCenter(new LngLat(0, 0));
             // scaleZoom(512/128) = 2, so covering zoom = floor(0 + 2) = 2.
             const tiles = coveringTiles(transform, {tileSize: 128, minzoom: 0, maxzoom: 2});
             expect(tiles).toHaveLength(16);
@@ -57,8 +67,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
 
         test('no duplicate tile IDs in a full-world result', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(0, 0));
             transform.setZoom(0);
+            transform.setCenter(new LngLat(0, 0));
             const tiles = coveringTiles(transform, {tileSize: 128, minzoom: 0, maxzoom: 2});
             const keys = tiles.map(keyOf);
             expect(new Set(keys).size).toBe(keys.length);
@@ -68,8 +78,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
     describe('south/north pole sweep positions still resolve the pole row (blank-strip regression)', () => {
         test('(0, -70) z2: south pole row present', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(0, -70));
             transform.setZoom(2);
+            transform.setCenter(new LngLat(0, -70));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             const keys = new Set(tiles.map(keyOf));
             // south pole row at z2 is y=3
@@ -81,8 +91,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
 
         test('(0, 75) z2: north pole row present', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(0, 75));
             transform.setZoom(2);
+            transform.setCenter(new LngLat(0, 75));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             const keys = new Set(tiles.map(keyOf));
             // north pole row at z2 is y=0
@@ -96,8 +106,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
     describe('mid-zoom regional view covers a neighborhood, not the whole world', () => {
         test('(-100, 40) z4 stays within a bounded neighborhood of x/y indices', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(-100, 40));
             transform.setZoom(4);
+            transform.setCenter(new LngLat(-100, 40));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             expect(tiles.length).toBeGreaterThan(0);
             // A z4 full world is 16x16 = 256 tiles; a genuinely regional view
@@ -111,8 +121,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
 
         test('(10, 50) z5 stays within a bounded neighborhood of x/y indices', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(10, 50));
             transform.setZoom(5);
+            transform.setCenter(new LngLat(10, 50));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             expect(tiles.length).toBeGreaterThan(0);
             // A z5 full world is 32x32 = 1024 tiles.
@@ -123,8 +133,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
     describe('east-west (antimeridian) wrap', () => {
         test('(170, 0) z2 enumerates tiles on both sides of the seam (x near 0 AND x near max)', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(170, 0));
             transform.setZoom(2);
+            transform.setCenter(new LngLat(170, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             expect(tiles.length).toBeGreaterThan(0);
             const commonZ = tiles[0].canonical.z;
@@ -141,8 +151,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
 
         test('(-170, 0) z2 also enumerates tiles on both sides of the seam', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(-170, 0));
             transform.setZoom(2);
+            transform.setCenter(new LngLat(-170, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             expect(tiles.length).toBeGreaterThan(0);
             const commonZ = tiles[0].canonical.z;
@@ -154,8 +164,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
 
         test('deep zoom directly on the antimeridian produces a tight (non-full-world) wrapped bbox', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(179.5, 0));
             transform.setZoom(8);
+            transform.setCenter(new LngLat(179.5, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             expect(tiles.length).toBeGreaterThan(0);
             // A full-world z8 result would be 256x256 = 65536 tiles; a tight
@@ -170,8 +180,8 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
 
         test('no duplicate tile IDs when straddling the antimeridian', () => {
             const transform = createTransform();
-            transform.setCenter(new LngLat(170, 0));
             transform.setZoom(2);
+            transform.setCenter(new LngLat(170, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             const keys = tiles.map(t => `${t.wrap}/${keyOf(t)}`);
             expect(new Set(keys).size).toBe(keys.length);

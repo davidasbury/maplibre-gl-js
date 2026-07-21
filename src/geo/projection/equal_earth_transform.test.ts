@@ -8,8 +8,15 @@ import {OverscaledTileID} from '../../tile/tile_id.ts';
 function createTransform(zoom: number = 3, center: LngLat = new LngLat(0, 0)): EqualEarthTransform {
     const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
     transform.resize(500, 500);
-    transform.setCenter(center);
+    // setZoom before setCenter (Stage B step 8): setCenter re-applies
+    // defaultConstrain immediately at whatever zoom is current, and its new
+    // zoom-dependent vertical clamp (Mechanism 3) hard-locks latitude to 0
+    // whenever the world's content is shorter than the viewport -- true at
+    // this transform's initial zoom (0) for a 500x500 viewport. Setting the
+    // real zoom first (matching handleJumpToCenterZoom's own order) means
+    // center's own constrain call sees the right zoom immediately.
     transform.setZoom(zoom);
+    transform.setCenter(center);
     return transform;
 }
 
@@ -258,6 +265,42 @@ describe('EqualEarthTransform', () => {
                 const transform = createTransform(3, new LngLat(90, 0));
                 const data = transform.getProjectionData({overscaledTileID: null});
                 expect(data.tileMercatorCoords).toEqual([0, 0, 1, 1]);
+            });
+        });
+
+        describe('defaultConstrain (Mechanism 3: zoom-dependent vertical clamp)', () => {
+            // 500x500 viewport (matches createTransform's default resize).
+            // At zoom 0 the world's content height (~249px) is shorter than
+            // the viewport (500px): the "full extent fits" low-zoom regime
+            // where the usable center-y interval is empty.
+            test('at a zoom where world height < viewport height, lat locks to 0 and lng passes through', () => {
+                const transform = createTransform(0, new LngLat(0, 0));
+                transform.setCenter(new LngLat(37, 60));
+                expect(transform.center.lat).toBe(0);
+                expect(transform.center.lng).toBeCloseTo(37, 10);
+            });
+
+            // At zoom 2 the world (~997px tall) exceeds the viewport, and
+            // lat=89 is far enough past the achievable range that the clamp
+            // engages: the resulting center must sit exactly at the no-void
+            // boundary, which locationToScreenPoint of the pole line proves
+            // directly (screen y ~ 0, not floating in the middle of the
+            // viewport and not negative/off-screen).
+            test('at a higher zoom, center at lat 89 clamps to exactly the no-void bound', () => {
+                const transform = createTransform(2, new LngLat(0, 0));
+                transform.setCenter(new LngLat(0, 89));
+                expect(transform.center.lat).toBeLessThan(89);
+                const poleScreen = transform.locationToScreenPoint(new LngLat(transform.center.lng, 90));
+                expect(poleScreen.y).toBeCloseTo(0, 6);
+            });
+
+            test('zoom clamp is unchanged: requests beyond [minZoom, maxZoom] are clamped', () => {
+                const transform = new EqualEarthTransform({minZoom: 1, maxZoom: 10, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(500, 500);
+                transform.setZoom(50);
+                expect(transform.zoom).toBe(10);
+                transform.setZoom(-5);
+                expect(transform.zoom).toBe(1);
             });
         });
     });
