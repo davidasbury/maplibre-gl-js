@@ -4,6 +4,16 @@ import {LngLat} from '../lng_lat.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {projectToEqualEarthWorldCoordinates, unprojectFromEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
+import {EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
+
+// Shared with the source's own zFit derivation (defaultConstrain): the zoom
+// at which world content height exactly equals the viewport height. Kept
+// here as a helper (not re-implemented ad hoc per test) so every zFit
+// assertion below is provably using the same formula as the source.
+function computeZFit(transform: EqualEarthTransform, screenHeight: number): number {
+    const contentHeightUnit = EQUAL_EARTH_WORLD_Y_SOUTH_POLE - EQUAL_EARTH_WORLD_Y_NORTH_POLE;
+    return Math.log2(screenHeight / (contentHeightUnit * transform.tileSize));
+}
 
 function createTransform(zoom: number = 3, center: LngLat = new LngLat(0, 0)): EqualEarthTransform {
     const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
@@ -270,13 +280,19 @@ describe('EqualEarthTransform', () => {
 
         describe('defaultConstrain (Mechanism 3: zoom-dependent vertical clamp)', () => {
             // 500x500 viewport (matches createTransform's default resize).
-            // At zoom 0 the world's content height (~249px) is shorter than
-            // the viewport (500px): the "full extent fits" low-zoom regime
-            // where the usable center-y interval is empty.
-            test('at a zoom where world height < viewport height, lat locks to 0 and lng passes through', () => {
+            // Requesting zoom 0 now floors to zFit (the dynamic zoom floor,
+            // see the "dynamic zoom floor" describe block below) rather than
+            // landing at 0 -- at exactly zFit the usable center-y interval
+            // has degenerated to a single point (world height == viewport
+            // height exactly), which by construction is centered on the
+            // equator, so lat still comes out ~0, just via a different path
+            // than Stage B step 8's original "empty interval" branch.
+            test('requesting a zoom below zFit floors to zFit, and lat still lands at the equator', () => {
                 const transform = createTransform(0, new LngLat(0, 0));
+                const zFit = computeZFit(transform, 500);
+                expect(transform.zoom).toBeCloseTo(zFit, 6);
                 transform.setCenter(new LngLat(37, 60));
-                expect(transform.center.lat).toBe(0);
+                expect(transform.center.lat).toBeCloseTo(0, 6);
                 expect(transform.center.lng).toBeCloseTo(37, 10);
             });
 
@@ -294,13 +310,57 @@ describe('EqualEarthTransform', () => {
                 expect(poleScreen.y).toBeCloseTo(0, 6);
             });
 
-            test('zoom clamp is unchanged: requests beyond [minZoom, maxZoom] are clamped', () => {
+            test('maxZoom clamp is unchanged: requests beyond maxZoom are clamped', () => {
                 const transform = new EqualEarthTransform({minZoom: 1, maxZoom: 10, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
                 transform.resize(500, 500);
                 transform.setZoom(50);
                 expect(transform.zoom).toBe(10);
+            });
+
+            // minZoom-side clamp is now MAX(minZoom, zFit), not minZoom alone
+            // -- for a 500x500 viewport zFit (~1.005) exceeds minZoom (1), so
+            // the dynamic floor, not the configured minZoom, wins here.
+            test('minZoom-side clamp is now max(minZoom, zFit), not minZoom alone', () => {
+                const transform = new EqualEarthTransform({minZoom: 1, maxZoom: 10, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(500, 500);
+                const zFit = computeZFit(transform, 500);
+                expect(zFit).toBeGreaterThan(1);
                 transform.setZoom(-5);
-                expect(transform.zoom).toBe(1);
+                expect(transform.zoom).toBeCloseTo(zFit, 6);
+            });
+        });
+
+        describe('dynamic zoom floor (owner follow-up)', () => {
+            test('at 1100x700, applyConstrain(center, 0).zoom === zFit', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                const zFit = computeZFit(transform, 700);
+                const result = transform.applyConstrain(new LngLat(0, 0), 0);
+                expect(result.zoom).toBeCloseTo(zFit, 10);
+            });
+
+            test('zooming to zFit + 1 is untouched', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                const zFit = computeZFit(transform, 700);
+                const result = transform.applyConstrain(new LngLat(0, 0), zFit + 1);
+                expect(result.zoom).toBeCloseTo(zFit + 1, 10);
+            });
+
+            test('maxZoom clamp unchanged even with the floor active', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 10, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                const result = transform.applyConstrain(new LngLat(0, 0), 50);
+                expect(result.zoom).toBe(10);
+            });
+
+            test('guards screenHeight === 0 (no floor applied, falls back to minZoom)', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                // Deliberately not resized (height stays 0): defaultConstrain
+                // must not divide by zero or produce NaN/Infinity.
+                const result = transform.applyConstrain(new LngLat(0, 0), 0);
+                expect(Number.isFinite(result.zoom)).toBe(true);
+                expect(result.zoom).toBe(0);
             });
         });
     });

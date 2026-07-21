@@ -568,9 +568,29 @@ export class EqualEarthTransform implements ITransform {
      *
      * `setMaxBounds` remains a documented no-op for this projection
      * (unchanged from Stage A).
+     *
+     * Dynamic zoom floor (owner follow-up after step 8 landed): the user
+     * must not be able to zoom out past the point where the pole lines sit
+     * at the top/bottom viewport edges -- zooming out further than that
+     * would show void above/below the poles even though the vertical clamp
+     * above is active (the clamp only repositions center-y within whatever
+     * range is available at the requested zoom; it can't fabricate content
+     * that doesn't exist at a zoom where the world is shorter than the
+     * viewport). `zFit` is the zoom at which world content height exactly
+     * equals the viewport height: `worldSize * contentHeightUnit = height`,
+     * `worldSize = tileSize * 2^z`, solved for z. Computed from the same
+     * pole-y constants as the vertical clamp (not a new hardcoded number),
+     * so it can never drift out of sync with them.
      */
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {
-        const constrainedZoom = clamp(+zoom, this.minZoom, this.maxZoom);
+        const screenHeight = this.size.y;
+        let minZoomForFit = this.minZoom;
+        if (screenHeight > 0) {
+            const contentHeightUnit = EQUAL_EARTH_WORLD_Y_SOUTH_POLE - EQUAL_EARTH_WORLD_Y_NORTH_POLE;
+            const zFit = Math.log2(screenHeight / (contentHeightUnit * this.tileSize));
+            minZoomForFit = Math.max(this.minZoom, zFit);
+        }
+        const constrainedZoom = clamp(+zoom, minZoomForFit, this.maxZoom);
         // Equal Earth's forward function is well-defined exactly at the poles
         // (unlike mercator's asymptotic blowup), so clamp to the true range
         // here instead of carrying over mercator's tighter MAX_VALID_LATITUDE
@@ -578,10 +598,14 @@ export class EqualEarthTransform implements ITransform {
         let constrainedLat = clamp(lngLat.lat, -90, 90);
 
         const worldSize = this.tileSize * zoomScale(constrainedZoom);
-        const screenHeight = this.size.y;
         const minCenterY = EQUAL_EARTH_WORLD_Y_NORTH_POLE * worldSize + screenHeight / 2;
         const maxCenterY = EQUAL_EARTH_WORLD_Y_SOUTH_POLE * worldSize - screenHeight / 2;
         if (minCenterY > maxCenterY) {
+            // Should be unreachable once the zFit floor above is active (it
+            // guarantees this interval is non-empty at any legal zoom) --
+            // kept as a safety fallback for resize races and other edge
+            // cases (e.g. screenHeight === 0, where minZoomForFit degrades
+            // to this.minZoom with no floor applied) rather than removed.
             constrainedLat = 0;
         } else {
             const centerY = equalEarthWorldFromLngLat(0, constrainedLat).y * worldSize;
