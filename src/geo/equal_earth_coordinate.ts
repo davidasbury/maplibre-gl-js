@@ -190,6 +190,29 @@ export const EQUAL_EARTH_WORLD_Y_NORTH_POLE: number = equalEarthWorldFromLngLat(
 export const EQUAL_EARTH_WORLD_Y_SOUTH_POLE: number = equalEarthWorldFromLngLat(0, -90).y;
 
 /**
+ * √G, where G is the (constant) ratio between Equal Earth's local area
+ * scale and mercator's at the equator, both measured in this engine's
+ * unit-world-per-unit-mercator terms. Because Equal Earth is equal-area
+ * and mercator's area distortion is exactly sec²(φ), the local
+ * EE-vs-mercator linear scale pair satisfies `sx(φ)·sy(φ) = G·cos²(φ)`
+ * at every latitude — so the geometric-mean thickness correction for
+ * symbolization extruded in mercator tile units (line widths, circle
+ * radii) is simply `1 / (√G · cos φ)`. This is the minimax scalar over
+ * line directions; Equal Earth is not conformal, so no scalar is exact
+ * (residual anisotropy ≈ ±16% at the equator, ±30% at ±60°).
+ *
+ * Derived from the projection's own constants, never hardcoded:
+ * sx(0) = 2π / (EXTENT·M·A1) (x-scale at the equator),
+ * sy(0) = A1·M·2π / EXTENT (y-scale at the equator).
+ * The shader chunk pins the same value as a float literal (GLSL cannot
+ * import); `equal_earth_transform.test.ts` guards the two against drift.
+ */
+export const EQUAL_EARTH_SQRT_AREA_RATIO: number = Math.sqrt(
+    (2 * Math.PI / (EQUAL_EARTH_WORLD_EXTENT * M * A1)) *
+    (A1 * M * 2 * Math.PI / EQUAL_EARTH_WORLD_EXTENT)
+);
+
+/**
  * y-only inverse: latitude as a function of unit world-y alone (Equal Earth
  * is pseudocylindrical — y never depends on x/λ0). Undoes the same scale +
  * y-flip as `lngLatFromEqualEarthWorld`, then reuses the shared Newton

@@ -8,7 +8,7 @@ import {interpolates} from '@maplibre/maplibre-gl-style-spec';
 import {type PointProjection} from '../../symbol/projection.ts';
 import {LngLatBounds} from '../lng_lat_bounds.ts';
 import {getMercatorHorizon, maxMercatorHorizonAngle, cameraMercatorCoordinateFromCenterAndRotation, calculateTileMatrix} from './mercator_utils.ts';
-import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld, equalEarthXScaleAtLat, latFromEqualEarthWorldY, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
+import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld, equalEarthXScaleAtLat, latFromEqualEarthWorldY, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE, EQUAL_EARTH_SQRT_AREA_RATIO} from '../equal_earth_coordinate.ts';
 import {projectToEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {EXTENT} from '../../data/extent.ts';
 import {TransformHelper} from '../transform_helper.ts';
@@ -74,7 +74,18 @@ type EqualEarthLinearizedTileData = {
     matrix: Mat4f32;
     quadUV: [number, number, number, number];
     quadVV: [number, number, number, number];
+    /**
+     * Per-tile geometric-mean thickness correction (see the shader chunk's
+     * eeThicknessCorrectionAtTileY): the linearized shader path has no
+     * mercator y to derive it from, so the CPU evaluates it at the tile's
+     * vertical midpoint (variation across a high-zoom tile is negligible)
+     * and ships it in tileMercatorCoords.x.
+     */
+    thicknessCorrection: number;
 };
+
+/** Mirrors the shader's EE_MAX_THICKNESS_CORRECTION. */
+const EE_MAX_THICKNESS_CORRECTION = 8.0;
 
 export class EqualEarthTransform implements ITransform {
     private _helper: TransformHelper;
@@ -933,6 +944,7 @@ export class EqualEarthTransform implements ITransform {
         const uvScale = mixedUV * f * f;
         const vvXScale = quadX * f * f;
         const vvYScale = quadY * f * f;
+        const midLat = latFromMercatorY(y0 + span / 2);
         const data: EqualEarthLinearizedTileData = {
             matrix: new Float32Array(tileMatrix),
             quadUV: [m[0] * uvScale, m[1] * uvScale, m[2] * uvScale, m[3] * uvScale],
@@ -942,6 +954,9 @@ export class EqualEarthTransform implements ITransform {
                 m[2] * vvXScale + m[6] * vvYScale,
                 m[3] * vvXScale + m[7] * vvYScale,
             ],
+            thicknessCorrection: Math.min(
+                1 / (EQUAL_EARTH_SQRT_AREA_RATIO * Math.cos(degreesToRadians(midLat))),
+                EE_MAX_THICKNESS_CORRECTION),
         };
         this._linearizedTileDataCache.set(cacheKey, data);
         return data;
@@ -1027,7 +1042,10 @@ export class EqualEarthTransform implements ITransform {
         if (linearized) {
             return {
                 mainMatrix: linearized.matrix,
-                tileMercatorCoords: [0, 0, 0, 0],
+                // zw == 0 is the linearized-mode sentinel; x carries the
+                // per-tile thickness correction (the shader has no mercator
+                // y to compute it from in this mode), y stays unused.
+                tileMercatorCoords: [linearized.thicknessCorrection, 0, 0, 0],
                 clippingPlane: [0, 0, 0, 0],
                 projectionTransition: applyGlobeMatrix ? 1 : 0,
                 fallbackMatrix,
@@ -1062,7 +1080,12 @@ export class EqualEarthTransform implements ITransform {
     }
 
     getCircleRadiusCorrection(): number {
-        return 1.0;
+        // Cancels the shader's geometric-mean thickness correction at the
+        // viewport center (globe's structural convention: shader scales
+        // per-vertex, this re-normalizes so circles/heatmaps keep their
+        // authored size where the user is looking). Stage B cleanup item 3;
+        // was a 1.0 stub.
+        return EQUAL_EARTH_SQRT_AREA_RATIO * Math.cos(degreesToRadians(this.center.lat));
     }
 
     getPitchedTextCorrection(_textAnchorX: number, _textAnchorY: number, _tileID: UnwrappedTileID): number {

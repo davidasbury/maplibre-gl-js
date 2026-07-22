@@ -4,7 +4,7 @@ import {LngLat} from '../lng_lat.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {projectToEqualEarthWorldCoordinates, unprojectFromEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
-import {EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
+import {EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE, EQUAL_EARTH_SQRT_AREA_RATIO} from '../equal_earth_coordinate.ts';
 import {mercatorXfromLng, mercatorYfromLat} from '../mercator_coordinate.ts';
 import {EXTENT} from '../../data/extent.ts';
 
@@ -595,6 +595,36 @@ describe('EqualEarthTransform', () => {
             const data = transform.getProjectionData({overscaledTileID: tileID});
             expect(data.equalEarthQuadUV).toEqual([0, 0, 0, 0]);
             expect(data.equalEarthQuadVV).toEqual([0, 0, 0, 0]);
+        });
+    });
+
+    describe('thickness/radius latitude correction (Stage B cleanup item 3)', () => {
+        test('the TS-derived sqrt(G) matches the shader literal (drift guard)', () => {
+            // The shader chunk pins EE_SQRT_AREA_RATIO = 1.1607026718 as a
+            // float literal (GLSL cannot import); this guards the two
+            // derivations against drifting apart.
+            expect(EQUAL_EARTH_SQRT_AREA_RATIO).toBeCloseTo(1.1607026718, 9);
+        });
+
+        test('getCircleRadiusCorrection cancels the shader correction at the viewport center', () => {
+            const equatorTransform = createTransform(4, new LngLat(0, 0));
+            // shader at lat 0: 1/(sqrt(G)·cos 0); CPU: sqrt(G)·cos 0 — product 1
+            expect(equatorTransform.getCircleRadiusCorrection()).toBeCloseTo(EQUAL_EARTH_SQRT_AREA_RATIO, 12);
+            const midLatTransform = createTransform(4, new LngLat(0, 60));
+            expect(midLatTransform.getCircleRadiusCorrection())
+                .toBeCloseTo(EQUAL_EARTH_SQRT_AREA_RATIO * Math.cos(Math.PI / 3), 12);
+        });
+
+        test('linearized tiles ship a capped per-tile thickness correction in tileMercatorCoords.x', () => {
+            const transform = createTransform(16, new LngLat(30, 50));
+            const scale = 1 << 14;
+            const tileID = new OverscaledTileID(16, 0, 14,
+                Math.floor(mercatorXfromLng(30) * scale), Math.floor(mercatorYfromLat(50) * scale));
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            expect(data.tileMercatorCoords[2]).toBe(0); // linearized sentinel
+            const expected = 1 / (EQUAL_EARTH_SQRT_AREA_RATIO * Math.cos(50 * Math.PI / 180));
+            expect(data.tileMercatorCoords[0]).toBeCloseTo(expected, 2);
+            expect(data.tileMercatorCoords[0]).toBeLessThanOrEqual(8.0);
         });
     });
 });

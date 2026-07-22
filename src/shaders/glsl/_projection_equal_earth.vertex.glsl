@@ -25,6 +25,10 @@ uniform highp vec4 u_projection_tile_mercator_coords;
 uniform highp vec4 u_projection_ee_quad_uv;
 uniform highp vec4 u_projection_ee_quad_vv;
 
+bool eeLinearizedMode() {
+    return u_projection_tile_mercator_coords.z == 0.0;
+}
+
 // const float rather than #define: the shader minifier in
 // build/generate-shaders.ts merges newlines after ")" into the next line,
 // which would extend a parenthesized macro body over the following statement.
@@ -39,16 +43,42 @@ const float EE_M = sqrt(3.0) / 2.0;
 // fine/unavoidable GPU-side.
 const float EE_WORLD_EXTENT = 5.4132599673921497;
 
+// sqrt(G): EE-vs-mercator area-scale ratio at the equator
+// (EQUAL_EARTH_SQRT_AREA_RATIO in equal_earth_coordinate.ts — derived
+// there from the projection constants; pinned equal by a unit test).
+const float EE_SQRT_AREA_RATIO = 1.1607026718;
+// Thickness cap: EE renders latitudes mercator data never carries
+// (beyond ±85.05°, e.g. client GeoJSON to ±90) where cos(lat) → 0 and
+// the correction would blow up; 8× is far beyond any sane line width
+// growth and keeps pole-line geometry finite.
+const float EE_MAX_THICKNESS_CORRECTION = 8.0;
+
+// Geometric-mean thickness correction for symbolization extruded in
+// mercator tile units (Stage B cleanup item 3; replaces the Stage-A 1.0
+// stubs). Equal-area gives sx(φ)·sy(φ) = G·cos²(φ) exactly, so the
+// minimax scalar over line directions is 1/(sqrt(G)·cos φ) — the analog
+// of globe's 1/cos(lat), which is exact for globe only because mercator
+// → sphere is conformal; EE is not, so ±16–30% direction-dependent
+// residual anisotropy is inherent and accepted.
+// In linearized mode the mercator y is unavailable in-shader (zw == 0
+// sentinel); the CPU folds the per-tile constant correction into
+// u_projection_tile_mercator_coords.x instead (negligible variation
+// across a high-zoom tile).
+float eeThicknessCorrectionAtTileY(float tileY) {
+    if (eeLinearizedMode()) {
+        return u_projection_tile_mercator_coords.x;
+    }
+    float mercator_y = u_projection_tile_mercator_coords.y + u_projection_tile_mercator_coords.w * tileY;
+    float lat = 2.0 * atan(exp(PI - (mercator_y * PI * 2.0))) - PI * 0.5;
+    return min(1.0 / (EE_SQRT_AREA_RATIO * cos(lat)), EE_MAX_THICKNESS_CORRECTION);
+}
+
 float projectLineThickness(float tileY) {
-    // Known Stage-A defect, deferred deliberately: Equal Earth line thickness
-    // should scale with latitude (compare globe's projectLineThickness).
-    return 1.0;
+    return eeThicknessCorrectionAtTileY(tileY);
 }
 
 float projectCircleRadius(float tileY) {
-    // Known Stage-A defect, deferred deliberately: same latitude-dependent
-    // scaling gap as projectLineThickness.
-    return 1.0;
+    return eeThicknessCorrectionAtTileY(tileY);
 }
 
 // Consider this private. Computes the Equal Earth position of a vertex as
@@ -98,10 +128,6 @@ vec2 projectToEqualEarth(vec2 posInTile, vec2 rawPos) {
 vec4 projectTileLinearized(vec2 p, float elevation) {
     vec4 pos = u_projection_matrix * vec4(p.x, p.y, elevation, 1.0);
     return pos + u_projection_ee_quad_uv * (p.x * p.y) + u_projection_ee_quad_vv * (p.y * p.y);
-}
-
-bool eeLinearizedMode() {
-    return u_projection_tile_mercator_coords.z == 0.0;
 }
 
 // Projects a point in tile-local coordinates (usually 0..EXTENT) to screen,
