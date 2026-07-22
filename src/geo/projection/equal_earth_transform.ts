@@ -1,7 +1,7 @@
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {MercatorCoordinate, latFromMercatorY, mercatorZfromAltitude} from '../mercator_coordinate.ts';
 import Point from '@mapbox/point-geometry';
-import {clamp, createMat4f64, degreesToRadians, createIdentityMat4f32, zoomScale, type Mat4f32, type Mat4f64} from '../../util/util.ts';
+import {clamp, createMat4f64, degreesToRadians, createIdentityMat4f32, warnOnce, zoomScale, type Mat4f32, type Mat4f64} from '../../util/util.ts';
 import {type mat2, mat4, vec3, vec4} from 'gl-matrix';
 import {UnwrappedTileID, OverscaledTileID, type CanonicalTileID, calculateTileKey} from '../../tile/tile_id.ts';
 import {interpolates} from '@maplibre/maplibre-gl-style-spec';
@@ -67,6 +67,17 @@ const OUTLINE_FIT_MARGIN = 0.94;
  * pole-row tiles, whose subdivision pole-sentinel vertices only the
  * polynomial path understands.
  */
+/**
+ * v1 camera posture (Stage B cleanup item 4; design proposal §5.4,
+ * clamp-and-document): bearing, pitch and roll are clamped to 0. The
+ * constrain math, the antimeridian clip geometry and
+ * getPitchedTextCorrection all assume an unrotated, untilted camera;
+ * accepting a tilt silently would render incorrectly rather than fail
+ * loudly (D11). Real tilt/rotation support is additive later, the way
+ * globe's capabilities grew across releases.
+ */
+const EE_CAMERA_CLAMP_WARNING = 'equal-earth projection: bearing, pitch and roll are not supported and are clamped to 0.';
+
 const EE_LINEARIZED_MIN_OVERSCALED_Z = 13;
 const EE_LINEARIZED_MAX_RESIDUAL_PX = 0.05;
 
@@ -124,23 +135,30 @@ export class EqualEarthTransform implements ITransform {
     setMaxZoom(zoom: number): void {
         this._helper.setMaxZoom(zoom);
     }
-    setMinPitch(pitch: number): void {
-        this._helper.setMinPitch(pitch);
+    setMinPitch(_pitch: number): void {
+        // Pitch bounds are normalized to 0 silently (they are bounds, not
+        // actions — Map's default maxPitch of 60 must not warn on every
+        // construction). See EE_CAMERA_CLAMP_WARNING.
+        this._helper.setMinPitch(0);
     }
-    setMaxPitch(pitch: number): void {
-        this._helper.setMaxPitch(pitch);
+    setMaxPitch(_pitch: number): void {
+        this._helper.setMaxPitch(0);
     }
     setRenderWorldCopies(renderWorldCopies: boolean): void {
         this._helper.setRenderWorldCopies(renderWorldCopies);
     }
     setBearing(bearing: number): void {
-        this._helper.setBearing(bearing);
+        // Clamp-and-document camera posture — see EE_CAMERA_CLAMP_WARNING.
+        if (bearing !== 0) warnOnce(EE_CAMERA_CLAMP_WARNING);
+        this._helper.setBearing(0);
     }
     setPitch(pitch: number): void {
-        this._helper.setPitch(pitch);
+        if (pitch !== 0) warnOnce(EE_CAMERA_CLAMP_WARNING);
+        this._helper.setPitch(0);
     }
     setRoll(roll: number): void {
-        this._helper.setRoll(roll);
+        if (roll !== 0) warnOnce(EE_CAMERA_CLAMP_WARNING);
+        this._helper.setRoll(0);
     }
     setFov(fov: number): void {
         this._helper.setFov(fov);
@@ -320,6 +338,10 @@ export class EqualEarthTransform implements ITransform {
             calcMatrices: () => this._calcMatrices(),
             defaultConstrain: (center, zoom) => { return this.defaultConstrain(center, zoom); }
         }, options);
+        // v1 camera posture: pitch bounds forced to 0 regardless of the
+        // TransformOptions the Map passed (its defaults allow 60).
+        this._helper.setMinPitch(0);
+        this._helper.setMaxPitch(0);
         // Stage A step 6 ("Covering tiles v1"): EE-aware naive-bbox provider.
         // See equal_earth_covering_tiles_details_provider.ts and
         // docs/resources/2026-07-20-stage-a-step6-covering-tiles.md (outer
@@ -335,6 +357,15 @@ export class EqualEarthTransform implements ITransform {
 
     public apply(that: IReadonlyTransform, constrain: boolean, forceOverrideZ?: boolean): void {
         this._helper.apply(that, constrain, forceOverrideZ);
+        // The helper copies bearing/pitch/roll wholesale — the entry path
+        // for a tilted camera when switching projections (e.g. mercator →
+        // equal-earth via setProjection). Clamp them here too.
+        if (this.pitch !== 0 || this.bearing !== 0 || this.roll !== 0) {
+            warnOnce(EE_CAMERA_CLAMP_WARNING);
+            this._helper.setPitch(0);
+            this._helper.setBearing(0);
+            this._helper.setRoll(0);
+        }
     }
 
     public get cameraPosition(): vec3 { return this._cameraPosition; }

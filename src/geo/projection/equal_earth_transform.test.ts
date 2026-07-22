@@ -2,6 +2,7 @@ import {describe, test, expect} from 'vitest';
 import Point from '@mapbox/point-geometry';
 import {LngLat} from '../lng_lat.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
+import {MercatorTransform} from './mercator_transform.ts';
 import {projectToEqualEarthWorldCoordinates, unprojectFromEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
 import {EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE, EQUAL_EARTH_SQRT_AREA_RATIO} from '../equal_earth_coordinate.ts';
@@ -595,6 +596,42 @@ describe('EqualEarthTransform', () => {
             const data = transform.getProjectionData({overscaledTileID: tileID});
             expect(data.equalEarthQuadUV).toEqual([0, 0, 0, 0]);
             expect(data.equalEarthQuadVV).toEqual([0, 0, 0, 0]);
+        });
+    });
+
+    describe('camera clamp: bearing/pitch/roll locked to 0 (cleanup item 4, proposal §5.4)', () => {
+        test('setters clamp to 0 instead of accepting a tilt/rotation', () => {
+            const transform = createTransform(4);
+            transform.setBearing(45);
+            transform.setPitch(30);
+            transform.setRoll(15);
+            expect(transform.bearing).toBe(0);
+            expect(transform.pitch).toBe(0);
+            expect(transform.roll).toBe(0);
+        });
+
+        test('pitch bounds normalize to 0 (including Map default maxPitch)', () => {
+            const transform = createTransform(4);
+            transform.setMaxPitch(60);
+            transform.setMinPitch(10);
+            expect(transform.maxPitch).toBe(0);
+            expect(transform.minPitch).toBe(0);
+            transform.setPitch(30);
+            expect(transform.pitch).toBe(0);
+        });
+
+        test('apply() from a tilted transform clamps the copied camera angles', () => {
+            const mercator = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+            mercator.resize(500, 500);
+            mercator.setZoom(4);
+            mercator.setPitch(35);
+            mercator.setBearing(50);
+            expect(mercator.pitch).toBe(35);
+            const transform = createTransform(4);
+            transform.apply(mercator, false);
+            expect(transform.pitch).toBe(0);
+            expect(transform.bearing).toBe(0);
+            expect(transform.roll).toBe(0);
         });
     });
 
