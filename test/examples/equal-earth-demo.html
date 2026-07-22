@@ -399,6 +399,34 @@
     // geometry to add at that point.
     const tissotFeatures = buildTissotFeatures();
 
+    // §5.5 polar data void (design proposal): mercator-cut world sources
+    // carry nothing beyond ±85.0511°, while Equal Earth renders to ±90 —
+    // the style background bled through as a polar strip. Style-side fix:
+    // explicit cap polygons. South cap continues the Antarctic ice/land
+    // fill; north cap continues the Arctic ocean. Parallels and pole
+    // lines are both straight under EE, so simple rectangles suffice
+    // (lng sampled every 15° for tiling/subdivision safety). Applied to
+    // the mercator-cut styles (overture, demotiles); the local GeoJSON
+    // styles carry data to ±90 and need none.
+    const MERCATOR_DATA_LIMIT = 85.0511;
+    function polarCapFeature(south) {
+        const edgeLat = south ? -MERCATOR_DATA_LIMIT : MERCATOR_DATA_LIMIT;
+        const poleLat = south ? -90 : 90;
+        const ring = [];
+        for (let lng = -180; lng <= 180; lng += 15) ring.push([lng, edgeLat]);
+        for (let lng = 180; lng >= -180; lng -= 15) ring.push([lng, poleLat]);
+        ring.push(ring[0]);
+        return {type: 'Feature', properties: {cap: south ? 'south' : 'north'}, geometry: {type: 'Polygon', coordinates: [ring]}};
+    }
+    const polarCaps = {type: 'FeatureCollection', features: [polarCapFeature(true), polarCapFeature(false)]};
+
+    function polarCapLayers(southColor, northColor) {
+        return [
+            {id: 'polar-cap-south', type: 'fill', source: 'polar-caps', filter: ['==', ['get', 'cap'], 'south'], paint: {'fill-color': southColor}},
+            {id: 'polar-cap-north', type: 'fill', source: 'polar-caps', filter: ['==', ['get', 'cap'], 'north'], paint: {'fill-color': northColor}}
+        ];
+    }
+
     // Projected indicatrix axis ratio at a circle's center, with
     // ground-equal sample offsets: the north/south pair is +-0.5 degrees of
     // latitude, and the east/west pair is +-0.5deg/cos(lat) degrees of
@@ -511,7 +539,25 @@
 
     const DEMOTILES_URL = 'https://demotiles.maplibre.org/style.json';
     const DEMOTILES_SET_STYLE_OPTIONS = {
-        transformStyle: (_prev, next) => ({...next, projection: {type: 'equal-earth'}})
+        // Also injects the §5.5 polar caps: demotiles is mercator-cut, so
+        // its white Antarctica ends at -85.05 with the page background
+        // beneath. South cap = demotiles' Antarctica white; north cap =
+        // its ocean blue (read from its background layer at runtime, with
+        // a fallback). Caps insert right after the background layer so
+        // every data/label layer draws above them.
+        transformStyle: (_prev, next) => {
+            const backgroundLayer = next.layers.find((l) => l.type === 'background');
+            const ocean = (backgroundLayer && backgroundLayer.paint && backgroundLayer.paint['background-color']) || '#d8f2ff';
+            const backgroundIndex = next.layers.findIndex((l) => l.type === 'background') + 1;
+            const layers = next.layers.slice();
+            layers.splice(backgroundIndex, 0, ...polarCapLayers('#ffffff', ocean));
+            return {
+                ...next,
+                projection: {type: 'equal-earth'},
+                sources: {...next.sources, 'polar-caps': {type: 'geojson', data: polarCaps}},
+                layers
+            };
+        }
     };
 
     // Overture geometry-only style. Layer names and zoom ranges verified
@@ -608,12 +654,16 @@
                 // line-following road labels.
                 'overture-divisions': {type: 'vector', url: overtureArchiveUrl('divisions')},
                 'overture-transportation': {type: 'vector', url: overtureArchiveUrl('transportation')},
+                'polar-caps': {type: 'geojson', data: polarCaps},
                 // Rides along so the projection's curvature signature stays
                 // visible over the basemap.
                 graticule: {type: 'geojson', data: graticule}
             },
             layers: [
                 {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                // §5.5 polar caps: south continues Antarctic land/ice, north
+                // continues Arctic water (the tinted overture water color).
+                ...polarCapLayers('#d8e8c8', '#93bedd'),
                 {id: 'land', type: 'fill', source: 'overture-base', 'source-layer': 'land', paint: {'fill-color': '#d8e8c8'}},
                 {id: 'land-cover', type: 'fill', source: 'overture-base', 'source-layer': 'land_cover', paint: {'fill-color': '#c2dcaa', 'fill-opacity': 0.5}},
                 {id: 'land-use', type: 'fill', source: 'overture-base', 'source-layer': 'land_use', minzoom: 8, paint: {'fill-color': '#cfe0b8', 'fill-opacity': 0.4}},
