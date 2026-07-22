@@ -56,10 +56,11 @@
         /* Panel is pointer-events:none so map drags pass through it; the
            checkbox rows are the interactive controls, so only they (and
            their labels, for click-to-toggle) opt back into pointer events.
-           Gate-safety note: the extra mode rows added for step 8(a) grow the
-           panel to ~185px tall -- still clear of every pixel-sampled region
-           (center row y=350, center 200x200 patch x>=450) per the comment
-           above. Keep new rows from pushing past that. */
+           Gate-safety note: the extra mode rows added for step 8(a) plus the
+           overture row grow the panel to ~205px tall -- still clear of every
+           pixel-sampled region (center row y=350, center 200x200 patch
+           x>=450) per the comment above. Keep new rows from pushing past
+           that. */
         .diag-toggle,
         .diag-toggle label {
             pointer-events: auto;
@@ -92,7 +93,9 @@
     <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Also relaxes the zoom floor from pole-fit to outline-fit so the whole outline is visible with void margins."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label></div>
     <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp). Overridden while demotiles is on."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
     <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required). Takes precedence over choropleth."><label for="diag-demotiles"><input type="checkbox" id="diag-demotiles" disabled /> demotiles</label></div>
+    <div class="diag-toggle" title="Overture Maps PMTiles (base z0&ndash;13 + buildings z6&ndash;14), geometry only &mdash; fills/lines, no labels until step 9. Remote range requests to the Overture S3 bucket (network required). Mutually exclusive with demotiles."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
 </div>
+<script src="./pmtiles-4.4.1.min.js"></script>
 <script type="module">
     import * as maplibregl from '../../dist/maplibre-gl-dev.mjs';
 
@@ -121,6 +124,19 @@
     const centerLat = params.has('lat') ? parseFloat(params.get('lat')) : 0;
     const zoom = params.has('zoom') ? parseFloat(params.get('zoom')) : 1.4;
     const useDemotiles = params.get('source') === 'demotiles';
+
+    // Step-10 forward pull (geometry-only lane, no step-9 dependency):
+    // `?source=overture` renders Overture Maps PMTiles -- fills/lines only,
+    // labels deliberately absent until step 9 gives symbols a live-lambda0
+    // placement story. Design note: docs/resources/
+    // 2026-07-22-overture-pmtiles-mlt-test-source.md. Archives are MVT in
+    // PMTiles on the public Overture S3 bucket (verified 2026-07-22: range
+    // requests honored, base z0-13, buildings z6-14); the pmtiles protocol
+    // shim is the vendored UMD build loaded above (global `pmtiles`), and
+    // the protocol synthesizes TileJSON (min/max zoom, bounds) from each
+    // archive's header, so past z13 the source overzooms -- exactly the
+    // provider-v2 stress this mode exists to exercise.
+    const useOverture = params.get('source') === 'overture';
 
     // Step 7: `?choropleth=1` swaps the flat land fill for a bucketed
     // choropleth layered over the same local style (background + graticule
@@ -246,14 +262,28 @@
         return [toDeg(lambda2), toDeg(phi2)];
     }
 
-    // Centers: lng -150..150 every 30 (11 columns), lat -75..75 every 15
-    // (11 rows, densified from the original 30-degree rows per owner
-    // request 2026-07-22 -- adds +-15/+-45/+-75) -- 121 circles total.
+    // Centers: lng -180..150 every 30 (12 columns -- the -180 column IS the
+    // antimeridian one, added per owner request 2026-07-22; +180 would
+    // duplicate it), lat -75..75 every 15 (11 rows, densified from the
+    // original 30-degree rows per owner request 2026-07-22 -- adds
+    // +-15/+-45/+-75) -- 132 circles total. The antimeridian rings come out
+    // of destinationPoint with continuous extended longitudes (approx. -184
+    // ..-176, never normalized across the seam), which MapLibre's GeoJSON
+    // path renders into the adjacent world copy -- no ring splitting needed.
     // Geometry is fixed at build time; only the `ratio`/`ratioLabel`
     // properties are recomputed and pushed via setData().
+    //
+    // Each circle is TWO features: the Polygon, and a Point at its center
+    // that carries the ratio label. Labeling the polygons directly placed
+    // one symbol anchor per tile the polygon touches (MapLibre tiles GeoJSON
+    // internally and anchors polygon labels per clipped fragment), so the
+    // wide high-latitude ellipses grew duplicate labels as zoom-in shrank
+    // tiles under them -- and allow-overlap/ignore-placement drew every one.
+    // A point lives in exactly one tile, so one label per circle per world
+    // copy. The layers filter on geometry type.
     function buildTissotFeatures() {
         const features = [];
-        for (let lng = -150; lng <= 150; lng += 30) {
+        for (let lng = -180; lng < 180; lng += 30) {
             for (let lat = -75; lat <= 75; lat += 15) {
                 const ring = [];
                 for (let i = 0; i <= TISSOT_STEPS; i++) {
@@ -262,8 +292,13 @@
                 }
                 features.push({
                     type: 'Feature',
-                    properties: {lng, lat, ratio: 0, ratioLabel: '–'},
+                    properties: {lng, lat},
                     geometry: {type: 'Polygon', coordinates: [ring]}
+                });
+                features.push({
+                    type: 'Feature',
+                    properties: {lng, lat, ratio: 0, ratioLabel: '–'},
+                    geometry: {type: 'Point', coordinates: [lng, lat]}
                 });
             }
         }
@@ -286,17 +321,32 @@
     // then pushes the whole collection back into the source. Expected:
     // ~0.74 at the equator, rising with latitude (~1.69 at +-60, steeper
     // still at +-75 -- Equal Earth flattens high-latitude circles).
+    //
+    // Seam safety (the -180 column): map.project() wraps longitudes into
+    // (lambda0-180, lambda0+180], so a sample pair straddling the seam
+    // projects to OPPOSITE screen edges and the raw east-west span reads as
+    // the whole world width. Instead of the full E-W span, use twice the
+    // smaller half-span from the projected center: x is linear in longitude
+    // at fixed latitude in Equal Earth, so for a non-straddling circle both
+    // halves are equal and this matches the old computation exactly, while
+    // at the seam the far-branch half is discarded. Same treatment N-S for
+    // symmetry (no wrap exists in latitude; over 0.5 degrees the asymmetry
+    // is negligible).
     function updateTissotRatios() {
         const source = map.getSource('tissot');
         if (!source) return;
         for (const feature of tissotFeatures) {
+            if (feature.geometry.type !== 'Point') continue;
             const {lng, lat} = feature.properties;
             const lngOffset = 0.5 / Math.cos(lat * Math.PI / 180);
+            const center = map.project([lng, lat]);
             const east = map.project([lng + lngOffset, lat]);
             const west = map.project([lng - lngOffset, lat]);
             const north = map.project([lng, lat + 0.5]);
             const south = map.project([lng, lat - 0.5]);
-            const ratio = Math.abs(east.x - west.x) / Math.abs(north.y - south.y);
+            const halfWidth = Math.min(Math.abs(east.x - center.x), Math.abs(west.x - center.x));
+            const halfHeight = Math.min(Math.abs(north.y - center.y), Math.abs(south.y - center.y));
+            const ratio = halfWidth / halfHeight;
             feature.properties.ratio = ratio;
             feature.properties.ratioLabel = Number.isFinite(ratio) ? ratio.toFixed(2) : 'n/a';
         }
@@ -375,8 +425,49 @@
         transformStyle: (_prev, next) => ({...next, projection: {type: 'equal-earth'}})
     };
 
-    async function applyStyle(demotiles, choropleth) {
-        if (demotiles) map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
+    // Overture geometry-only style. Layer names and zoom ranges verified
+    // against the archives' own vector_layers metadata (2026-06-17.0): base
+    // carries land/water/land_cover/land_use/infrastructure/bathymetry
+    // z0-13, buildings carries building/building_part z6-14. Palette
+    // extends the local land style's so mode flips are visually comparable.
+    // Registering the protocol is idempotent-by-guard; done lazily so the
+    // page keeps zero network cost until the mode is actually entered.
+    const OVERTURE_RELEASE = '2026-06-17.0';
+    function overtureArchiveUrl(theme) {
+        return `pmtiles://https://overturemaps-extras-us-west-2.s3.amazonaws.com/tiles/${OVERTURE_RELEASE}/${theme}.pmtiles`;
+    }
+    let pmtilesProtocolRegistered = false;
+    function buildOvertureStyle() {
+        if (!pmtilesProtocolRegistered) {
+            maplibregl.addProtocol('pmtiles', new pmtiles.Protocol().tile);
+            pmtilesProtocolRegistered = true;
+        }
+        return {
+            version: 8,
+            projection: {type: 'equal-earth'},
+            sources: {
+                'overture-base': {type: 'vector', url: overtureArchiveUrl('base')},
+                'overture-buildings': {type: 'vector', url: overtureArchiveUrl('buildings')},
+                // Rides along so the projection's curvature signature stays
+                // visible over the unlabeled basemap.
+                graticule: {type: 'geojson', data: graticule}
+            },
+            layers: [
+                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                {id: 'land', type: 'fill', source: 'overture-base', 'source-layer': 'land', paint: {'fill-color': '#d8e8c8'}},
+                {id: 'land-cover', type: 'fill', source: 'overture-base', 'source-layer': 'land_cover', paint: {'fill-color': '#c2dcaa', 'fill-opacity': 0.5}},
+                {id: 'land-use', type: 'fill', source: 'overture-base', 'source-layer': 'land_use', minzoom: 8, paint: {'fill-color': '#cfe0b8', 'fill-opacity': 0.4}},
+                {id: 'water', type: 'fill', source: 'overture-base', 'source-layer': 'water', paint: {'fill-color': '#a4c8e1'}},
+                {id: 'infrastructure', type: 'line', source: 'overture-base', 'source-layer': 'infrastructure', minzoom: 13, paint: {'line-color': '#b0a898', 'line-width': 1}},
+                {id: 'buildings', type: 'fill', source: 'overture-buildings', 'source-layer': 'building', minzoom: 11, paint: {'fill-color': '#c9c1b6', 'fill-outline-color': '#a89f92'}},
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+            ]
+        };
+    }
+
+    async function applyStyle(demotiles, choropleth, overture) {
+        if (overture) map.setStyle(buildOvertureStyle());
+        else if (demotiles) map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
         else if (choropleth) map.setStyle(await buildChoroplethStyle());
         else map.setStyle(buildLandStyle());
     }
@@ -396,7 +487,7 @@
         center: [centerLng, centerLat],
         zoom
     });
-    await applyStyle(useDemotiles, useChoropleth);
+    await applyStyle(useDemotiles, useChoropleth, useOverture);
     window.map = map;
 
     // Tissot mode wiring: source + 3 layers, added/removed through these two
@@ -416,18 +507,21 @@
             id: 'tissot-fill',
             type: 'fill',
             source: 'tissot',
+            filter: ['==', ['geometry-type'], 'Polygon'],
             paint: {'fill-color': 'rgba(220,50,50,0.35)'}
         });
         map.addLayer({
             id: 'tissot-outline',
             type: 'line',
             source: 'tissot',
+            filter: ['==', ['geometry-type'], 'Polygon'],
             paint: {'line-color': '#8b0000', 'line-width': 1}
         });
         map.addLayer({
             id: 'tissot-label',
             type: 'symbol',
             source: 'tissot',
+            filter: ['==', ['geometry-type'], 'Point'],
             layout: {
                 'text-field': ['get', 'ratioLabel'],
                 'text-size': 11,
@@ -542,6 +636,7 @@
         const clipCheckbox = document.getElementById('diag-clip');
         const choroplethCheckbox = document.getElementById('diag-choropleth');
         const demotilesCheckbox = document.getElementById('diag-demotiles');
+        const overtureCheckbox = document.getElementById('diag-overture');
 
         tissotCheckbox.disabled = false;
         tissotCheckbox.checked = useTissot;
@@ -587,18 +682,30 @@
             setUrlParam('clip', on ? '1' : null);
         });
 
-        choroplethCheckbox.disabled = useDemotiles; // demotiles takes precedence
+        choroplethCheckbox.disabled = useDemotiles || useOverture; // basemap modes take precedence
         choroplethCheckbox.checked = useChoropleth;
         demotilesCheckbox.disabled = false;
         demotilesCheckbox.checked = useDemotiles;
+        overtureCheckbox.disabled = false;
+        overtureCheckbox.checked = useOverture;
         function refreshStyleFromCheckboxes() {
-            choroplethCheckbox.disabled = demotilesCheckbox.checked;
-            applyStyle(demotilesCheckbox.checked, choroplethCheckbox.checked).catch(console.error);
-            setUrlParam('source', demotilesCheckbox.checked ? 'demotiles' : null);
+            choroplethCheckbox.disabled = demotilesCheckbox.checked || overtureCheckbox.checked;
+            applyStyle(demotilesCheckbox.checked, choroplethCheckbox.checked, overtureCheckbox.checked).catch(console.error);
+            setUrlParam('source', overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null);
             setUrlParam('choropleth', choroplethCheckbox.checked ? '1' : null);
         }
         choroplethCheckbox.addEventListener('change', refreshStyleFromCheckboxes);
-        demotilesCheckbox.addEventListener('change', refreshStyleFromCheckboxes);
+        // The two remote basemaps are radio-style: checking one unchecks the
+        // other (both checked has no meaning -- applyStyle would let
+        // overture shadow demotiles silently).
+        demotilesCheckbox.addEventListener('change', () => {
+            if (demotilesCheckbox.checked) overtureCheckbox.checked = false;
+            refreshStyleFromCheckboxes();
+        });
+        overtureCheckbox.addEventListener('change', () => {
+            if (overtureCheckbox.checked) demotilesCheckbox.checked = false;
+            refreshStyleFromCheckboxes();
+        });
     });
 
     // Diagnostics panel (step-8 wishlist items 1/4/5; Tissot mode is
