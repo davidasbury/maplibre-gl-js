@@ -450,7 +450,49 @@
     let pmtilesProtocolRegistered = false;
     function buildOvertureStyle() {
         if (!pmtilesProtocolRegistered) {
-            maplibregl.addProtocol('pmtiles', new pmtiles.Protocol().tile);
+            // In-flight request dedupe around the pmtiles protocol. The
+            // provider's world copies are distinct tile keys to MapLibre
+            // but identical byte ranges to the archive, and they fire
+            // concurrently -- a cold z1 load was measured issuing every
+            // tile fetch twice (~5 MB wasted; session 0017 network
+            // profile). Keyed by URL; ref-counted so a shared fetch is
+            // only aborted when EVERY requester has aborted (a plain
+            // shared-promise dedupe would let one copy's cancellation
+            // kill a tile the other copy still wants).
+            const protocol = new pmtiles.Protocol();
+            const inflight = new Map();
+            maplibregl.addProtocol('pmtiles', (params, abortController) => {
+                let entry = inflight.get(params.url);
+                // The aborted-entry guard and the synchronous delete in the
+                // abort listener close the same race: a doomed (aborting)
+                // entry must never be handed to a NEW requester, or its
+                // AbortError marks the fresh tile errored and it sticks
+                // unloaded until the next movement (seen as
+                // areTilesLoaded()===false in the abort-cycle check).
+                if (!entry || entry.ctrl.signal.aborted) {
+                    const ctrl = new AbortController();
+                    entry = {refs: 0, ctrl, promise: protocol.tile(params, ctrl)};
+                    const clear = () => { if (inflight.get(params.url) === entry) inflight.delete(params.url); };
+                    entry.promise.then(clear, clear);
+                    inflight.set(params.url, entry);
+                }
+                entry.refs++;
+                abortController.signal.addEventListener('abort', () => {
+                    if (--entry.refs <= 0) {
+                        if (inflight.get(params.url) === entry) inflight.delete(params.url);
+                        entry.ctrl.abort();
+                    }
+                });
+                // Every requester gets its OWN copy of the payload and the
+                // shared original is never handed out: MapLibre transfers
+                // the response's ArrayBuffer to a worker, so a shared
+                // buffer is detached by whichever copy wins and the other
+                // tile sticks in 'loading' forever (the instrumented trail
+                // showed exactly the wrap-copy joiners of settle-ok fetches
+                // stuck). A 1-2 MB slice() is noise next to the network
+                // fetch it dedupes.
+                return entry.promise.then((r) => (r && r.data instanceof Uint8Array ? {...r, data: r.data.slice()} : r));
+            });
             pmtilesProtocolRegistered = true;
         }
         return {
