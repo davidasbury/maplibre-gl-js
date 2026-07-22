@@ -245,10 +245,27 @@ export class VectorTileSource extends Evented<SourceEventType> implements Source
             if (data?.etagUnmodified) result.unmodified = true;
             return result;
         } catch (err) {
+            // Distinguish "this tile's own request was aborted" (abortTile
+            // aborts the controller and deletes it — the tile is no longer
+            // wanted, silent return is correct) from an AbortError that
+            // leaked out of a shared/upstream fetch for a tile that is
+            // still wanted (2026-07-22 odd-water diagnosis, latent
+            // silent-hole path: the old unconditional swallow left such a
+            // tile in 'loading'/empty-'loaded' limbo forever, invisible to
+            // areTilesLoaded() and the errored-tile counter). Capture the
+            // evidence BEFORE deleting the controller.
+            const ownRequestAborted = tile.aborted || !tile.abortController || tile.abortController.signal.aborted;
             delete tile.abortController;
 
-            if (tile.aborted || isAbortError(err)) {
-                return;
+            if (isAbortError(err)) {
+                if (ownRequestAborted) {
+                    return;
+                }
+                // Orphaned abort: rethrow so TileManager._loadTile marks
+                // the tile 'errored' (with erroredAt set — no status field
+                // on an AbortError), making it visible to loaded()/the
+                // FAILED indicator and eligible for retry-with-cooldown.
+                throw err;
             }
             if (err && err.status !== 404) {
                 throw err;

@@ -296,6 +296,61 @@ describe('VectorTileSource', () => {
         expect(tile.loadVectorData).toHaveBeenCalledTimes(0);
     });
 
+    test('silently ignores an AbortError when the tile\'s own request was aborted', async () => {
+        server.respondWith('/source.json', JSON.stringify(fixturesSource));
+
+        const source = createSource({url: '/source.json'});
+        source.dispatcher = getWrapDispatcher()({
+            async sendAsync(_message, abortController) {
+                // Simulate abortTile() racing the in-flight request: the
+                // tile's own controller is aborted before rejection.
+                abortController.abort();
+                throw new AbortError('aborted');
+            }
+        });
+        const promise = waitForMetadataEvent(source);
+        await sleep(0);
+        server.respond();
+        await promise;
+        const tile = {
+            tileID: new OverscaledTileID(10, 0, 10, 5, 5),
+            state: 'loading',
+            loadVectorData: vi.fn(),
+            setExpiryData() {}
+        } as any as Tile;
+        await expect(source.loadTile(tile)).resolves.toBeUndefined();
+        expect(tile.loadVectorData).toHaveBeenCalledTimes(0);
+    });
+
+    test('rethrows an orphaned AbortError for a tile that was not itself aborted (silent-hole regression)', async () => {
+        // 2026-07-22 odd-water diagnosis, latent defect: an AbortError
+        // leaking out of a shared/upstream fetch for a still-wanted tile
+        // (own controller alive and un-aborted) used to be swallowed,
+        // stranding the tile in 'loading'/empty-'loaded' limbo. It must
+        // now reject so the tile manager routes it to 'errored' and the
+        // retry-with-cooldown picks it up.
+        server.respondWith('/source.json', JSON.stringify(fixturesSource));
+
+        const source = createSource({url: '/source.json'});
+        source.dispatcher = getWrapDispatcher()({
+            async sendAsync(_message) {
+                throw new AbortError('leaked from a shared fetch');
+            }
+        });
+        const promise = waitForMetadataEvent(source);
+        await sleep(0);
+        server.respond();
+        await promise;
+        const tile = {
+            tileID: new OverscaledTileID(10, 0, 10, 5, 5),
+            state: 'loading',
+            loadVectorData: vi.fn(),
+            setExpiryData() {}
+        } as any as Tile;
+        await expect(source.loadTile(tile)).rejects.toThrow('leaked from a shared fetch');
+        expect(tile.loadVectorData).toHaveBeenCalledTimes(0);
+    });
+
     test('loads an empty tile received from worker', async () => {
         server.respondWith('/source.json', JSON.stringify(fixturesSource));
 
@@ -517,7 +572,13 @@ describe('VectorTileSource', () => {
         expect(tile.etag).toBeUndefined();
     });
 
-    test('swallows an AbortError from the worker request', async () => {
+    test('swallows an AbortError when the tile carries the aborted flag', async () => {
+        // Previously this test pinned the unconditional swallow — the exact
+        // silent-hole defect (2026-07-22 odd-water diagnosis): an
+        // AbortError for a NON-aborted tile now rethrows (see the
+        // silent-hole regression test above). The remaining legitimate
+        // swallow variants are the tile.aborted flag (this test) and an
+        // aborted own controller (the racing-abort test above).
         const source = createSource({
             tiles: ['http://example.com/{z}/{x}/{y}.png']
         });
@@ -526,7 +587,7 @@ describe('VectorTileSource', () => {
         const tile = {
             tileID: new OverscaledTileID(10, 0, 10, 5, 5),
             state: 'loading',
-            aborted: false,
+            aborted: true,
             etag: undefined,
             loadVectorData: vi.fn(),
             setExpiryData() {}
