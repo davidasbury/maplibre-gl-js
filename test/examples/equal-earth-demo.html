@@ -119,12 +119,14 @@
     // switches the style to the real demotiles.maplibre.org basemap
     // (network permitting) with the equal-earth projection applied, per
     // step 6's "demotiles attempt" gate.
-    // Default central meridian is -11.5 (owner request 2026-07-22): it puts
-    // the antimeridian seam at 168.5E, splitting the Bering Strait so the
-    // seam crosses the fewest land pieces. Headless gates/sweeps all pass
-    // ?lng= explicitly, so they are unaffected.
+    // Default central meridian is +11.5 (owner request 2026-07-22): it puts
+    // the antimeridian seam at 168.5W, threading the Bering Strait between
+    // Cape Dezhnev (169.7W) and Cape Prince of Wales (168.1W) so the seam
+    // crosses the fewest land pieces. (First cut used -11.5 -- seam at
+    // 168.5E, through mainland Chukotka; wrong hemisphere.) Headless
+    // gates/sweeps all pass ?lng= explicitly, so they are unaffected.
     const params = new URLSearchParams(window.location.search);
-    const centerLng = params.has('lng') ? parseFloat(params.get('lng')) : -11.5;
+    const centerLng = params.has('lng') ? parseFloat(params.get('lng')) : 11.5;
     const centerLat = params.has('lat') ? parseFloat(params.get('lat')) : 0;
     const zoom = params.has('zoom') ? parseFloat(params.get('zoom')) : 1.4;
     const useDemotiles = params.get('source') === 'demotiles';
