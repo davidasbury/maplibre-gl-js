@@ -18,11 +18,59 @@
         #map {
             height: 100%;
         }
+
+        /* Diagnostics panel (step-8 wishlist items 1/4/5). Position and
+           palette are gate-load-bearing: the step-8 gate scripts pixel-
+           sample the 10px-inset corners, rows y=2 and y=height-3, the
+           center row, and a 200x200 center patch. top:40/left:10 sits in
+           none of those, and the dark background can never read as void
+           (void test is r,g,b all >250). Keep it that way. */
+        #diag {
+            position: absolute;
+            top: 40px;
+            left: 10px;
+            z-index: 10;
+            padding: 6px 10px;
+            max-width: 220px;
+            background: rgba(20, 30, 40, 0.82);
+            color: #d8e8f0;
+            font: 12px/1.6 monospace;
+            border-radius: 4px;
+            pointer-events: none;
+        }
+
+        #diag-tiles-glyph {
+            display: inline-block;
+        }
+
+        #diag-tiles-glyph.diag-spin {
+            animation: diag-spin 0.9s linear infinite;
+        }
+
+        @keyframes diag-spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Panel is pointer-events:none so map drags pass through it; the
+           tissot checkbox is the one interactive control, so only it (and
+           its label, for click-to-toggle) opt back into pointer events. */
+        #diag-tissot-row,
+        #diag-tissot-row label {
+            pointer-events: auto;
+        }
     </style>
 </head>
 
 <body>
 <div id="map"></div>
+<div id="diag">
+    <div>zoom: <span id="diag-zoom">&ndash;</span></div>
+    <div>proj ratio: <span id="diag-blend">&ndash;</span> <span style="opacity:.6">(EE=1)</span></div>
+    <div><span id="diag-tiles">tiles loading&hellip;</span> <span id="diag-tiles-glyph">&#9676;</span></div>
+    <div id="diag-tissot-row"><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label></div>
+</div>
 <script type="module">
     import * as maplibregl from '../../dist/maplibre-gl-dev.mjs';
 
@@ -118,6 +166,95 @@
         };
     }
 
+    // Step 8 Tissot's-indicatrix mode: `?tissot=1` overlays geodesic small
+    // circles (radius 3.75 degrees, 48-point spherical approximation) on a
+    // 30-degree grid to visualize local distortion. Off by default -- the
+    // step-8 gate scripts run without this param and must be unaffected.
+    // The diagnostics-panel checkbox drives the same overlay live (see
+    // addTissotOverlay/removeTissotOverlay below), so the URL param is just
+    // the checkbox's initial state, not the only way in.
+    // Each circle's on-screen width/height ratio (sampled via map.project()
+    // at +-0.5 degree offsets from its center) is written into the
+    // feature's `ratio`/`ratioLabel` properties and shown as a label.
+    // Equal Earth is pseudocylindrical, so the ratio is expected to vary
+    // with latitude only -- not force a value, just measure and report.
+    const useTissot = params.get('tissot') === '1';
+    const TISSOT_RADIUS_DEG = 3.75;
+    const TISSOT_STEPS = 48;
+
+    function toRad(deg) { return deg * Math.PI / 180; }
+    function toDeg(rad) { return rad * 180 / Math.PI; }
+
+    // Standard spherical destination-point formula: the point `distDeg`
+    // degrees of angular distance from [lng,lat] along initial bearing
+    // `bearingDeg`.
+    function destinationPoint(lng, lat, distDeg, bearingDeg) {
+        const phi1 = toRad(lat), lambda1 = toRad(lng);
+        const theta = toRad(bearingDeg);
+        const delta = toRad(distDeg);
+        const phi2 = Math.asin(Math.sin(phi1) * Math.cos(delta) + Math.cos(phi1) * Math.sin(delta) * Math.cos(theta));
+        const lambda2 = lambda1 + Math.atan2(
+            Math.sin(theta) * Math.sin(delta) * Math.cos(phi1),
+            Math.cos(delta) - Math.sin(phi1) * Math.sin(phi2)
+        );
+        return [toDeg(lambda2), toDeg(phi2)];
+    }
+
+    // Centers on a 30-degree grid: lng -150..150 (11), lat -60..60 (5) --
+    // 55 circles total. Geometry is fixed at build time; only the `ratio`/
+    // `ratioLabel` properties are recomputed and pushed via setData().
+    function buildTissotFeatures() {
+        const features = [];
+        for (let lng = -150; lng <= 150; lng += 30) {
+            for (let lat = -60; lat <= 60; lat += 30) {
+                const ring = [];
+                for (let i = 0; i <= TISSOT_STEPS; i++) {
+                    const bearing = (i % TISSOT_STEPS) * (360 / TISSOT_STEPS);
+                    ring.push(destinationPoint(lng, lat, TISSOT_RADIUS_DEG, bearing));
+                }
+                features.push({
+                    type: 'Feature',
+                    properties: {lng, lat, ratio: 0, ratioLabel: '–'},
+                    geometry: {type: 'Polygon', coordinates: [ring]}
+                });
+            }
+        }
+        return features;
+    }
+
+    // Built unconditionally: the checkbox can turn the overlay on later in
+    // a session that didn't start with ?tissot=1, and it needs real
+    // geometry to add at that point.
+    const tissotFeatures = buildTissotFeatures();
+
+    // Projected indicatrix axis ratio at a circle's center, with
+    // ground-equal sample offsets: the north/south pair is +-0.5 degrees of
+    // latitude, and the east/west pair is +-0.5deg/cos(lat) degrees of
+    // longitude so both pairs span the same ground distance (grid caps at
+    // +-60 degrees, so cos(lat) >= 0.5 -- no pole guard needed). Without the
+    // cos(lat) correction, a plain +-0.5deg longitude offset is a shorter
+    // ground distance at high latitude and the label stops describing the
+    // drawn ellipse. Mutates tissotFeatures in place, then pushes the whole
+    // collection back into the source. Expected: ~0.74 at the equator,
+    // rising above 1 toward +-60 (Equal Earth flattens high-latitude
+    // circles).
+    function updateTissotRatios() {
+        const source = map.getSource('tissot');
+        if (!source) return;
+        for (const feature of tissotFeatures) {
+            const {lng, lat} = feature.properties;
+            const lngOffset = 0.5 / Math.cos(lat * Math.PI / 180);
+            const east = map.project([lng + lngOffset, lat]);
+            const west = map.project([lng - lngOffset, lat]);
+            const north = map.project([lng, lat + 0.5]);
+            const south = map.project([lng, lat - 0.5]);
+            const ratio = Math.abs(east.x - west.x) / Math.abs(north.y - south.y);
+            feature.properties.ratio = ratio;
+            feature.properties.ratioLabel = Number.isFinite(ratio) ? ratio.toFixed(2) : 'n/a';
+        }
+        source.setData({type: 'FeatureCollection', features: tissotFeatures});
+    }
+
     let localStyle;
     if (!useDemotiles && useChoropleth) {
         localStyle = {
@@ -193,6 +330,123 @@
         map.setStyle(localStyle);
     }
     window.map = map;
+
+    // Tissot mode wiring: source + 3 layers, added/removed through these two
+    // functions so both the `?tissot=1` URL param (headless use) and the
+    // live diagnostics-panel checkbox drive the same code path. Both
+    // functions are idempotent (safe to call repeatedly or out of order).
+    // `beforeId` is only meaningful for the local styles (they always carry
+    // a `graticule` line layer as the top layer); demotiles has no such
+    // layer, so lookup finds nothing and the tissot layers land on top of
+    // the whole style, per spec.
+    function addTissotOverlay() {
+        if (map.getSource('tissot')) return;
+        const styleLayers = map.getStyle()?.layers || [];
+        const graticuleLayer = styleLayers.find((l) => l.id === 'graticule');
+        const beforeId = graticuleLayer ? graticuleLayer.id : undefined;
+        map.addSource('tissot', {
+            type: 'geojson',
+            data: {type: 'FeatureCollection', features: tissotFeatures}
+        });
+        map.addLayer({
+            id: 'tissot-fill',
+            type: 'fill',
+            source: 'tissot',
+            paint: {'fill-color': 'rgba(220,50,50,0.35)'}
+        }, beforeId);
+        map.addLayer({
+            id: 'tissot-outline',
+            type: 'line',
+            source: 'tissot',
+            paint: {'line-color': '#8b0000', 'line-width': 1}
+        }, beforeId);
+        map.addLayer({
+            id: 'tissot-label',
+            type: 'symbol',
+            source: 'tissot',
+            layout: {
+                'text-field': ['get', 'ratioLabel'],
+                'text-size': 11,
+                'text-allow-overlap': true,
+                'text-ignore-placement': true
+            },
+            paint: {'text-color': '#8b0000'}
+        }, beforeId);
+        updateTissotRatios();
+    }
+
+    function removeTissotOverlay() {
+        if (map.getLayer('tissot-label')) map.removeLayer('tissot-label');
+        if (map.getLayer('tissot-outline')) map.removeLayer('tissot-outline');
+        if (map.getLayer('tissot-fill')) map.removeLayer('tissot-fill');
+        if (map.getSource('tissot')) map.removeSource('tissot');
+    }
+
+    // Recompute is safe to call whenever -- updateTissotRatios() itself
+    // no-ops when the source doesn't currently exist, so this listener can
+    // stay attached across checkbox on/off cycles without extra bookkeeping.
+    map.on('moveend', updateTissotRatios);
+
+    // Checkbox starts `disabled` in the HTML (unsafe to touch the style
+    // before the map has one); enable it and sync its initial checked state
+    // from the URL param only once 'load' fires.
+    map.on('load', () => {
+        const tissotCheckbox = document.getElementById('diag-tissot');
+        tissotCheckbox.disabled = false;
+        tissotCheckbox.checked = useTissot;
+        if (useTissot) addTissotOverlay();
+        tissotCheckbox.addEventListener('change', () => {
+            if (tissotCheckbox.checked) addTissotOverlay();
+            else removeTissotOverlay();
+        });
+    });
+
+    // Diagnostics panel (step-8 wishlist items 1/4/5; Tissot mode is
+    // separate). `?diag=0` hides it. Cost: a few textContent writes per
+    // rendered frame, only while the map is actually redrawing.
+    const diagEl = document.getElementById('diag');
+    const diagZoom = document.getElementById('diag-zoom');
+    const diagBlend = document.getElementById('diag-blend');
+    const diagTiles = document.getElementById('diag-tiles');
+    const diagTilesGlyph = document.getElementById('diag-tiles-glyph');
+    if (params.get('diag') === '0') diagEl.hidden = true;
+
+    // Stopwatch: dataloading -> idle. The first cycle is the page load
+    // time; later cycles time tile fetch+parse after each pan/zoom.
+    const pageStart = performance.now();
+    let busySince = pageStart;
+    let lastLoadMs = null;
+    let loadLabel = 'page load';
+
+    function renderDiag() {
+        if (diagEl.hidden) return;
+        const tileZoom = map.transform?.tileZoom;
+        diagZoom.textContent = map.getZoom().toFixed(2) +
+            (Number.isFinite(tileZoom) ? ` (tiles z${tileZoom})` : '');
+        const t = map.style?.projection?.transitionState;
+        diagBlend.textContent = typeof t === 'number' ? t.toFixed(2) : 'n/a';
+        const busy = busySince !== null;
+        diagTiles.textContent = busy ? 'tiles loading…' : `tiles loaded in ${Math.round(lastLoadMs)} ms`;
+        diagTilesGlyph.textContent = busy ? '◌' : '✓';
+        diagTilesGlyph.classList.toggle('diag-spin', busy);
+    }
+
+    map.on('dataloading', () => {
+        if (busySince === null) {
+            busySince = performance.now();
+            loadLabel = 'tiles';
+        }
+        renderDiag();
+    });
+    map.on('idle', () => {
+        if (busySince !== null) {
+            lastLoadMs = performance.now() - busySince;
+            busySince = null;
+        }
+        renderDiag();
+    });
+    map.on('render', renderDiag);
+    renderDiag();
 </script>
 </body>
 

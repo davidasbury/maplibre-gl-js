@@ -4,9 +4,17 @@ import path from 'node:path';
 import {CoverageReport} from 'monocart-coverage-reports';
 
 export async function launchPuppeteer(headless = true): Promise<Browser> {
+    // ANGLE_BACKEND selects the ANGLE renderer for the test browser.
+    // Unset -> SwiftShader software GL (the deterministic default every
+    // committed baseline was measured against). On a GPU box, e.g.
+    // ANGLE_BACKEND=vulkan uses the hardware (homebot RTX 3060) -- expect
+    // minor rasterization differences vs the software-GL baselines.
+    const angleBackend = process.env.ANGLE_BACKEND;
     return puppeteer.launch({
         headless,
-        args: [
+        args: angleBackend ? [
+            `--use-angle=${angleBackend}`,
+        ] : [
             '--disable-gpu',
             '--enable-features=AllowSwiftShaderFallback,AllowSoftwareGLFallbackDueToCrashes',
             '--enable-unsafe-swiftshader'
