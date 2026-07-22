@@ -96,6 +96,7 @@
     <div>zoom: <span id="diag-zoom">&ndash;</span></div>
     <div>proj ratio: <span id="diag-blend">&ndash;</span> <span style="opacity:.6">(EE=1)</span></div>
     <div><span id="diag-tiles">tiles loading&hellip;</span> <span id="diag-tiles-glyph">&#9676;</span></div>
+    <div id="diag-gl-row" hidden>gl: <span id="diag-gl">&ndash;</span></div>
     <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
     <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Also relaxes the zoom floor from pole-fit to outline-fit so the whole outline is visible with void margins."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label></div>
     <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp). Overridden while demotiles is on."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
@@ -925,6 +926,28 @@
     let lastLoadMs = null;
     let loadLabel = 'page load';
 
+    // Indicator honesty (session 0019 fix, option 3): a tile whose fetch
+    // fails non-abort goes to state 'errored', renders as a permanent hole,
+    // and is COUNTED AS LOADED by the idle/loaded machinery — so the old
+    // indicator showed a clean checkmark over a picture with holes (see
+    // docs/resources/2026-07-22-overture-errored-tile-holes-diagnosis.md,
+    // outer repo). Count errored tiles in the in-view sets directly and
+    // say so. Debug-page-only reach into fork internals, same precedent
+    // as mapTransform().
+    function countErroredTiles() {
+        const tileManagers = map.style && map.style.tileManagers;
+        if (!tileManagers) return 0;
+        let errored = 0;
+        for (const id of Object.keys(tileManagers)) {
+            const inView = tileManagers[id]._inViewTiles;
+            if (!inView) continue;
+            for (const tile of inView.getAllTiles()) {
+                if (tile.state === 'errored') errored++;
+            }
+        }
+        return errored;
+    }
+
     function renderDiag() {
         if (diagEl.hidden) return;
         const tileZoom = mapTransform()?.tileZoom;
@@ -933,10 +956,40 @@
         const t = map.style?.projection?.transitionState;
         diagBlend.textContent = typeof t === 'number' ? t.toFixed(2) : 'n/a';
         const busy = busySince !== null;
-        diagTiles.textContent = busy ? 'tiles loading…' : `tiles loaded in ${Math.round(lastLoadMs)} ms`;
-        diagTilesGlyph.textContent = busy ? '◌' : '✓';
+        const errored = countErroredTiles();
+        if (busy) {
+            diagTiles.textContent = 'tiles loading…';
+            diagTilesGlyph.textContent = '◌';
+        } else if (errored > 0) {
+            diagTiles.textContent = `tiles loaded in ${Math.round(lastLoadMs)} ms — ${errored} FAILED`;
+            diagTilesGlyph.textContent = '✗';
+        } else {
+            diagTiles.textContent = `tiles loaded in ${Math.round(lastLoadMs)} ms`;
+            diagTilesGlyph.textContent = '✓';
+        }
+        diagTilesGlyph.style.color = (!busy && errored > 0) ? '#ff9090' : '';
         diagTilesGlyph.classList.toggle('diag-spin', busy);
     }
+
+    // WebGL context-loss instrumentation (black-strip / black-viewport
+    // investigation on asker, session 0019 follow-up): if the viewport ever
+    // blacks out, this row turns the invisible GPU event into an on-screen,
+    // timestamped fact — no DevTools needed at repro time. Row is hidden
+    // until an event fires so the panel height (gate-load-bearing, see the
+    // CSS comment) is unchanged in every normal run. Events also go to the
+    // console with timestamps for correlation with brave://gpu.
+    const diagGlRow = document.getElementById('diag-gl-row');
+    const diagGl = document.getElementById('diag-gl');
+    function glEvent(text) {
+        const stamp = new Date().toISOString().slice(11, 23);
+        diagGlRow.hidden = false;
+        diagGl.textContent = `${text} @ ${stamp}`;
+        console.error(`[equal-earth-demo] webgl ${text} @ ${stamp}`);
+    }
+    map.getCanvas().addEventListener('webglcontextlost', (e) => {
+        glEvent(`CONTEXT LOST${e.statusMessage ? ` (${e.statusMessage})` : ''}`);
+    });
+    map.getCanvas().addEventListener('webglcontextrestored', () => glEvent('context restored'));
 
     map.on('dataloading', () => {
         if (busySince === null) {
