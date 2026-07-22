@@ -93,7 +93,7 @@
     <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Also relaxes the zoom floor from pole-fit to outline-fit so the whole outline is visible with void margins."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label></div>
     <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp). Overridden while demotiles is on."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
     <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required). Takes precedence over choropleth."><label for="diag-demotiles"><input type="checkbox" id="diag-demotiles" disabled /> demotiles</label></div>
-    <div class="diag-toggle" title="Overture Maps PMTiles (base z0&ndash;13 + buildings z6&ndash;14), geometry only &mdash; fills/lines, no labels until step 9. Remote range requests to the Overture S3 bucket (network required). Mutually exclusive with demotiles."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
+    <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus: country/region/locality labels, line-following road and graticule labels, all placed against the live central meridian. Remote range requests to the Overture S3 bucket (network required). Mutually exclusive with demotiles."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
 <script type="module">
@@ -101,16 +101,25 @@
 
     // 15-degree graticule as a client-side GeoJSON so curvature of parallels/
     // meridians (the visible signature of Equal Earth vs mercator) is obvious.
+    // Each line carries a `name` property ("30°E", "15°S", …) so label-
+    // bearing styles (the step-9 Overture corpus) can run line-following
+    // symbols along it — meridians bow under Equal Earth, making these the
+    // page's own regression corpus for curved line-label placement. The
+    // geometry-only styles simply don't reference the property.
+    function graticuleName(value, positiveSuffix, negativeSuffix) {
+        if (value === 0) return '0°';
+        return `${Math.abs(value)}°${value > 0 ? positiveSuffix : negativeSuffix}`;
+    }
     const graticule = {type: 'FeatureCollection', features: []};
     for (let lng = -180; lng <= 180; lng += 15) {
         const coords = [];
         for (let lat = -90; lat <= 90; lat += 2) coords.push([lng, lat]);
-        graticule.features.push({type: 'Feature', properties: {}, geometry: {type: 'LineString', coordinates: coords}});
+        graticule.features.push({type: 'Feature', properties: {name: graticuleName(lng, 'E', 'W')}, geometry: {type: 'LineString', coordinates: coords}});
     }
     for (let lat = -90; lat <= 90; lat += 15) {
         const coords = [];
         for (let lng = -180; lng <= 180; lng += 2) coords.push([lng, lat]);
-        graticule.features.push({type: 'Feature', properties: {}, geometry: {type: 'LineString', coordinates: coords}});
+        graticule.features.push({type: 'Feature', properties: {name: graticuleName(lat, 'N', 'S')}, geometry: {type: 'LineString', coordinates: coords}});
     }
 
     // Step 6 sweep support: read center/zoom from the URL query string
@@ -131,10 +140,12 @@
     const zoom = params.has('zoom') ? parseFloat(params.get('zoom')) : 1.4;
     const useDemotiles = params.get('source') === 'demotiles';
 
-    // Step-10 forward pull (geometry-only lane, no step-9 dependency):
-    // `?source=overture` renders Overture Maps PMTiles -- fills/lines only,
-    // labels deliberately absent until step 9 gives symbols a live-lambda0
-    // placement story. Design note: docs/resources/
+    // `?source=overture` renders Overture Maps PMTiles. Landed geometry-only
+    // as the step-10 forward pull; since step 9 (symbols/collision) it is the
+    // fully-labeled test corpus -- divisions (country/region/locality
+    // labels), transportation (line-following road labels) and graticule
+    // line labels, all placed against the live central meridian.
+    // Design note: docs/resources/
     // 2026-07-22-overture-pmtiles-mlt-test-source.md. Archives are MVT in
     // PMTiles on the public Overture S3 bucket (verified 2026-07-22: range
     // requests honored, base z0-13, buildings z6-14); the pmtiles protocol
@@ -498,11 +509,22 @@
         return {
             version: 8,
             projection: {type: 'equal-earth'},
+            // No `glyphs` URL anywhere in this style, deliberately: this
+            // MapLibre version draws glyphs locally via TinySDF whenever the
+            // style has no glyph server (glyph_manager.ts), so labels here
+            // are network-free and deterministic in headless runs.
             sources: {
                 'overture-base': {type: 'vector', url: overtureArchiveUrl('base')},
                 'overture-buildings': {type: 'vector', url: overtureArchiveUrl('buildings')},
+                // Step 9 label corpus: divisions carries the `division`
+                // point layer (z0-12, @name/subtype/population) — country
+                // labels from z0, regions and localities as zoom rises.
+                // Transportation carries `segment` (z4-14, @name) for
+                // line-following road labels.
+                'overture-divisions': {type: 'vector', url: overtureArchiveUrl('divisions')},
+                'overture-transportation': {type: 'vector', url: overtureArchiveUrl('transportation')},
                 // Rides along so the projection's curvature signature stays
-                // visible over the unlabeled basemap.
+                // visible over the basemap.
                 graticule: {type: 'geojson', data: graticule}
             },
             layers: [
@@ -512,8 +534,66 @@
                 {id: 'land-use', type: 'fill', source: 'overture-base', 'source-layer': 'land_use', minzoom: 8, paint: {'fill-color': '#cfe0b8', 'fill-opacity': 0.4}},
                 {id: 'water', type: 'fill', source: 'overture-base', 'source-layer': 'water', paint: {'fill-color': '#a4c8e1'}},
                 {id: 'infrastructure', type: 'line', source: 'overture-base', 'source-layer': 'infrastructure', minzoom: 13, paint: {'line-color': '#b0a898', 'line-width': 1}},
+                {id: 'roads', type: 'line', source: 'overture-transportation', 'source-layer': 'segment', minzoom: 10, filter: ['==', ['get', 'subtype'], 'road'], paint: {'line-color': '#c4a986', 'line-width': 1.2}},
                 {id: 'buildings', type: 'fill', source: 'overture-buildings', 'source-layer': 'building', minzoom: 11, paint: {'fill-color': '#c9c1b6', 'fill-outline-color': '#a89f92'}},
-                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}},
+                // ---- Step 9 label layers (all placement goes through the
+                // fixed projectTileCoordinates; collision keys off live λ0).
+                // Meridian/parallel labels: line-following symbols along the
+                // graticule — meridians bow under Equal Earth, so these are
+                // the curved-line-placement regression corpus at every zoom.
+                {
+                    id: 'graticule-labels', type: 'symbol', source: 'graticule',
+                    layout: {
+                        'symbol-placement': 'line',
+                        'text-field': ['get', 'name'],
+                        'text-size': 10,
+                        'symbol-spacing': 400
+                    },
+                    paint: {'text-color': '#4a6b8a', 'text-halo-color': 'rgba(255,255,255,0.85)', 'text-halo-width': 1.2}
+                },
+                {
+                    id: 'road-labels', type: 'symbol', source: 'overture-transportation', 'source-layer': 'segment', minzoom: 11,
+                    filter: ['all', ['==', ['get', 'subtype'], 'road'], ['has', '@name']],
+                    layout: {
+                        'symbol-placement': 'line',
+                        'text-field': ['get', '@name'],
+                        'text-size': 11
+                    },
+                    paint: {'text-color': '#6b5537', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.2}
+                },
+                {
+                    id: 'locality-labels', type: 'symbol', source: 'overture-divisions', 'source-layer': 'division', minzoom: 6,
+                    filter: ['==', ['get', 'subtype'], 'locality'],
+                    layout: {
+                        'text-field': ['get', '@name'],
+                        'text-size': 11,
+                        // Bigger places win contested space deterministically.
+                        'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'population'], 0]]
+                    },
+                    paint: {'text-color': '#444444', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.2}
+                },
+                {
+                    id: 'region-labels', type: 'symbol', source: 'overture-divisions', 'source-layer': 'division', minzoom: 4,
+                    filter: ['==', ['get', 'subtype'], 'region'],
+                    layout: {
+                        'text-field': ['get', '@name'],
+                        'text-size': 12,
+                        'text-transform': 'uppercase',
+                        'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'population'], 0]]
+                    },
+                    paint: {'text-color': '#7a6a52', 'text-halo-color': 'rgba(255,255,255,0.9)', 'text-halo-width': 1.2}
+                },
+                {
+                    id: 'country-labels', type: 'symbol', source: 'overture-divisions', 'source-layer': 'division',
+                    filter: ['==', ['get', 'subtype'], 'country'],
+                    layout: {
+                        'text-field': ['get', '@name'],
+                        'text-size': ['interpolate', ['linear'], ['zoom'], 0, 10, 3, 13, 6, 16],
+                        'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'population'], 0]]
+                    },
+                    paint: {'text-color': '#333333', 'text-halo-color': 'rgba(255,255,255,0.95)', 'text-halo-width': 1.4}
+                }
             ]
         };
     }
