@@ -56,14 +56,21 @@
         /* Panel is pointer-events:none so map drags pass through it; the
            checkbox rows are the interactive controls, so only they (and
            their labels, for click-to-toggle) opt back into pointer events.
-           Gate-safety note: the extra mode rows added for step 8(a) plus the
-           overture row grow the panel to ~205px tall -- still clear of every
-           pixel-sampled region (center row y=350, center 200x200 patch
-           x>=450) per the comment above. Keep new rows from pushing past
-           that. */
+           Gate-safety note: the extra mode rows added for step 8(a), the
+           overture row, and the four step-10 label sub-rows grow the panel
+           to ~275px tall (bottom edge ~315px from the viewport top) --
+           still clear of every pixel-sampled region (center row y=350,
+           center 200x200 patch x>=450) per the comment above. Keep new
+           rows from pushing past that. */
         .diag-toggle,
         .diag-toggle label {
             pointer-events: auto;
+        }
+
+        /* Per-dataset label sub-toggles (step 10): indented under their
+           parent basemap row, only meaningful while that mode is active. */
+        .diag-sub {
+            margin-left: 16px;
         }
 
         /* Antimeridian clip mask (step 8 remainder (a)): a screen-space
@@ -93,7 +100,11 @@
     <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Also relaxes the zoom floor from pole-fit to outline-fit so the whole outline is visible with void margins."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label></div>
     <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp). Overridden while demotiles is on."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
     <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required). Takes precedence over choropleth."><label for="diag-demotiles"><input type="checkbox" id="diag-demotiles" disabled /> demotiles</label></div>
+    <div class="diag-toggle diag-sub" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> labels</label></div>
     <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus: country/region/locality labels, line-following road and graticule labels, all placed against the live central meridian. Remote range requests to the Overture S3 bucket (network required). Mutually exclusive with demotiles."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
+    <div class="diag-toggle diag-sub" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
+    <div class="diag-toggle diag-sub" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
+    <div class="diag-toggle diag-sub" title="Toggle the graticule line labels (meridian/parallel degree values, line-following along bowing meridians)."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> graticule</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
 <script type="module">
@@ -740,15 +751,46 @@
         return map._camera && map._camera.transform;
     }
 
+    // Per-dataset label sub-toggles (step 10 QoL): each entry maps one
+    // diag sub-checkbox to the symbol layers it controls and the basemap
+    // mode it belongs to. Toggling flips layout `visibility` on layers
+    // that exist in the current style; datasets whose mode is inactive
+    // have no layers present and the checkbox is disabled. State is
+    // URL-round-tripped like the other toggles (default on; `<param>=0`
+    // opts out) so headless label-isolation runs can pin it.
+    const LABEL_DATASETS = {
+        demotiles: {checkboxId: 'diag-lbl-demotiles', param: 'lbl-demotiles', mode: 'demotiles', layers: ['countries-label', 'geolines-label']},
+        divisions: {checkboxId: 'diag-lbl-divisions', param: 'lbl-divisions', mode: 'overture', layers: ['country-labels', 'region-labels', 'locality-labels']},
+        roads: {checkboxId: 'diag-lbl-roads', param: 'lbl-roads', mode: 'overture', layers: ['road-labels']},
+        graticule: {checkboxId: 'diag-lbl-graticule', param: 'lbl-graticule', mode: 'overture', layers: ['graticule-labels']}
+    };
+    const labelDatasetOn = {};
+    for (const key of Object.keys(LABEL_DATASETS)) {
+        labelDatasetOn[key] = params.get(LABEL_DATASETS[key].param) !== '0';
+    }
+
+    function applyLabelVisibility() {
+        for (const key of Object.keys(LABEL_DATASETS)) {
+            for (const layerId of LABEL_DATASETS[key].layers) {
+                if (map.getLayer(layerId)) {
+                    map.setLayoutProperty(layerId, 'visibility', labelDatasetOn[key] ? 'visible' : 'none');
+                }
+            }
+        }
+    }
+
     // Overlay survival across setStyle(): a style swap drops user-added
     // sources/layers, so re-add the tissot overlay when the incoming style
     // becomes usable. Also re-assert the outline-fit floor flag -- cheap
-    // insurance against the transform being rebuilt with the style.
+    // insurance against the transform being rebuilt with the style -- and
+    // re-apply the label sub-toggle visibilities, which live in layer
+    // layout properties the incoming style just reset.
     let tissotOn = false;
     map.on('style.load', () => {
         if (tissotOn) addTissotOverlay();
         const transform = mapTransform();
         if (transform) transform.outlineFitZoomFloor = clipOn;
+        applyLabelVisibility();
     });
 
     // Mode toggles write themselves back into the URL (replaceState, no
@@ -823,9 +865,32 @@
         demotilesCheckbox.checked = useDemotiles;
         overtureCheckbox.disabled = false;
         overtureCheckbox.checked = useOverture;
+
+        // Label sub-toggles: initial checked state from the URL, enabled
+        // only while the owning basemap mode is active.
+        for (const key of Object.keys(LABEL_DATASETS)) {
+            const dataset = LABEL_DATASETS[key];
+            const checkbox = document.getElementById(dataset.checkboxId);
+            checkbox.checked = labelDatasetOn[key];
+            checkbox.addEventListener('change', () => {
+                labelDatasetOn[key] = checkbox.checked;
+                applyLabelVisibility();
+                setUrlParam(dataset.param, checkbox.checked ? null : '0');
+            });
+        }
+        function refreshLabelCheckboxEnablement() {
+            const activeMode = overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null;
+            for (const key of Object.keys(LABEL_DATASETS)) {
+                document.getElementById(LABEL_DATASETS[key].checkboxId).disabled = LABEL_DATASETS[key].mode !== activeMode;
+            }
+        }
+        refreshLabelCheckboxEnablement();
+        applyLabelVisibility();
+
         function refreshStyleFromCheckboxes() {
             choroplethCheckbox.disabled = demotilesCheckbox.checked || overtureCheckbox.checked;
             applyStyle(demotilesCheckbox.checked, choroplethCheckbox.checked, overtureCheckbox.checked).catch(console.error);
+            refreshLabelCheckboxEnablement();
             setUrlParam('source', overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null);
             setUrlParam('choropleth', choroplethCheckbox.checked ? '1' : null);
         }
