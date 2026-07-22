@@ -74,7 +74,14 @@ float eeThicknessCorrectionAtTileY(float tileY) {
 }
 
 float projectLineThickness(float tileY) {
-    return eeThicknessCorrectionAtTileY(tileY);
+    // REVERTED to 1.0 after owner review (2026-07-22): the geometric-mean
+    // correction made graticule lines visibly widen toward the poles — a
+    // look regression on the demo's face. The cartographic options (1.0 =
+    // authored-width-in-tile-space, geometric mean = minimax over
+    // directions, per-direction = impossible for a scalar) are recorded in
+    // the design proposal for an upstream decision; circles keep the
+    // area-true correction below.
+    return 1.0;
 }
 
 float projectCircleRadius(float tileY) {

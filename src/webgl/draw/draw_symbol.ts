@@ -67,7 +67,11 @@ export function drawSymbols(painter: Painter, tileManager: TileManager, layer: S
 
     const {isRenderingToTexture} = renderOptions;
     // Disable the stencil test so that labels aren't clipped to tile boundaries.
-    const stencilMode = StencilMode.disabled;
+    // Symbols are deliberately not tile-clipped, so under the equal-earth
+    // seam clip they must apply the seam-bit test themselves or labels
+    // beyond the antimeridian render into the void (owner-reported on the
+    // first engineclip build).
+    const stencilMode = painter.seamClipActive() ? painter.stencilModeForSeamClip() : StencilMode.disabled;
     const colorMode = painter.colorModeForRenderPass();
     const hasVariablePlacement = layer._unevaluatedLayout.hasValue('text-variable-anchor') || layer._unevaluatedLayout.hasValue('text-variable-anchor-offset');
 

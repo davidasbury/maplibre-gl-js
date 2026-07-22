@@ -6,6 +6,7 @@ import {SegmentVector} from '../data/segment.ts';
 import {RasterBoundsArray, PosArray, TriangleIndexArray, LineStripIndexArray} from '../data/array_types.g.ts';
 import rasterBoundsAttributes from '../data/raster_bounds_attributes.ts';
 import posAttributes from '../data/pos_attributes.ts';
+import {mercatorYfromLat} from '../geo/mercator_coordinate.ts';
 import {type ProgramConfiguration} from '../data/program_configuration.ts';
 import {CrossTileSymbolIndex} from '../symbol/cross_tile_symbol_index.ts';
 import {shaders} from '../shaders/shaders.ts';
@@ -365,32 +366,45 @@ export class Painter {
         // 2.5 * EXTENT = 20480 < 32767.
         const seamWest = Math.round((this.transform.center.lng / 360) * EXTENT);
         const seamEast = seamWest + EXTENT;
-        const yTop = -EXTENT;
-        const yBottom = 2 * EXTENT;
-        const SEAM_STEPS = 64;
+        // Sample the seam edge uniformly in LATITUDE, not mercator y:
+        // mercator-y-uniform sampling is densest at the poles and sparsest
+        // at the equator (a step there spanned ~17 deg of latitude), so the
+        // chords sagged inward and cut visible scallops out of content near
+        // the equator (owner-reported). 158 uniform-latitude rows keep the
+        // chord error sub-0.1 px; the +/-89.999 end rows close the strip
+        // over the last sliver toward the pole lines. Row y values are
+        // identical for both strips, so compute once.
+        const SEAM_LAT_LIMIT = 89.95;
+        const SEAM_STEPS = 158;
+        const rowYs: number[] = [Math.round(mercatorYfromLat(89.999) * EXTENT)];
+        for (let i = 0; i <= SEAM_STEPS; i++) {
+            const lat = SEAM_LAT_LIMIT - (2 * SEAM_LAT_LIMIT) * i / SEAM_STEPS;
+            rowYs.push(Math.round(mercatorYfromLat(lat) * EXTENT));
+        }
+        rowYs.push(Math.round(mercatorYfromLat(-89.999) * EXTENT));
         const seamArray = new PosArray();
         for (const [innerX, outerX] of [[seamWest, seamWest - EXTENT], [seamEast, seamEast + EXTENT]]) {
-            for (let i = 0; i <= SEAM_STEPS; i++) {
-                const y = Math.round(yTop + (yBottom - yTop) * i / SEAM_STEPS);
+            for (const y of rowYs) {
                 seamArray.emplaceBack(innerX, y);
                 seamArray.emplaceBack(outerX, y);
             }
         }
-        const vertsPerStrip = (SEAM_STEPS + 1) * 2;
+        const vertsPerStrip = rowYs.length * 2;
 
         if (!this._seamMaskBuffer) {
             this._seamMaskBuffer = context.createVertexBuffer(seamArray, posAttributes.members, true);
             const seamIndices = new TriangleIndexArray();
+            const rows = rowYs.length;
             for (let strip = 0; strip < 2; strip++) {
                 const base = strip * vertsPerStrip;
-                for (let i = 0; i < SEAM_STEPS; i++) {
+                for (let i = 0; i < rows - 1; i++) {
                     const row = base + i * 2;
                     seamIndices.emplaceBack(row, row + 1, row + 2);
                     seamIndices.emplaceBack(row + 1, row + 3, row + 2);
                 }
             }
             this._seamMaskIndexBuffer = context.createIndexBuffer(seamIndices);
-            this._seamMaskSegments = SegmentVector.simpleSegment(0, 0, 2 * vertsPerStrip, 2 * SEAM_STEPS * 2);
+            this._seamMaskSegments = SegmentVector.simpleSegment(0, 0, 2 * vertsPerStrip, 2 * (rows - 1) * 2);
         } else {
             this._seamMaskBuffer.updateData(seamArray);
         }
