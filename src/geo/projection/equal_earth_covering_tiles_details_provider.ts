@@ -1,6 +1,12 @@
-import Point from '@mapbox/point-geometry';
 import {clamp} from '../../util/util.ts';
 import {lngFromMercatorX, latFromMercatorY} from '../mercator_coordinate.ts';
+import {
+    equalEarthWorldFromLngLat,
+    equalEarthXScaleAtLat,
+    latFromEqualEarthWorldY,
+    EQUAL_EARTH_WORLD_Y_NORTH_POLE,
+    EQUAL_EARTH_WORLD_Y_SOUTH_POLE,
+} from '../equal_earth_coordinate.ts';
 import {IntersectionResult, type IBoundingVolume} from '../../util/primitives/bounding_volume.ts';
 import type {vec4} from 'gl-matrix';
 import type {Frustum} from '../../util/primitives/frustum.ts';
@@ -10,9 +16,11 @@ import type {CoveringTilesOptionsInternal} from './covering_tiles.ts';
 import type {CoveringTilesDetailsProvider} from './covering_tiles_details_provider.ts';
 
 /**
- * Naive v1 covering-tiles provider for Equal Earth (Stage A step 6). See
+ * Covering-tiles provider for Equal Earth (Stage A step 6, reworked v2 in
+ * session 0013's follow-up). See
  * `docs/resources/2026-07-20-stage-a-step6-covering-tiles.md` in the outer
- * project (adaptive-equal-earth) for the full design rationale -- summary:
+ * project (adaptive-equal-earth) for the original design rationale -- the
+ * frustum-sidestep summarized below is unchanged from v1:
  *
  * The shared `coveringTiles()` traversal (`covering_tiles.ts`) culls tiles by
  * intersecting a per-tile `IBoundingVolume` against the transform's real 3D
@@ -29,119 +37,114 @@ import type {CoveringTilesDetailsProvider} from './covering_tiles_details_provid
  * returns a synthetic `IBoundingVolume` whose intersection tests ignore
  * their frustum/plane arguments and instead return a verdict precomputed
  * from comparing the tile's own (mercator-derived) lat/lng rectangle against
- * a geographic bounding box of the current viewport. That bbox is built once
- * per `coveringTiles()` call (see `allowVariableZoom`, the seam) by
- * unprojecting the viewport corners and edge midpoints through the
- * transform's own inverse -- "naive v1: unproject viewport corners/edges,
- * then geographic bbox, then mercator tile enumeration" per the phase 3 plan.
+ * a geographic window of the current viewport. KEEP this mechanism -- it is
+ * still the only sound way to decide EE tile visibility without warped
+ * bounding geometry.
+ *
+ * v1 -> v2 (session 0013, `docs/resources/2026-07-22-step8-high-zoom-defect-diagnosis.md`):
+ * v1 built that geographic window by unprojecting 8 viewport samples through
+ * the transform's own inverse, validated by a screen-space round trip, and
+ * fell back to the full world whenever any sample's round trip exceeded 1px.
+ * Three convicted mechanisms made that unusable at real zoom levels:
+ *
+ * 1. The round-trip check itself: at z>=12 the transform's inverse round
+ *    trip error routinely exceeds the 1px tolerance, so `computeViewportGeoBBox`
+ *    fell back to `fullWorldBBox` and the traversal enumerated the whole
+ *    world (~16.7M leaves x 7 wraps) -- this is what wedged the page at z12+.
+ * 2. `BBOX_PAD_DEGREES = 1` was a fixed-degree pad. At z11 the viewport
+ *    spans only ~0.2 degrees, so a 1-degree pad on each side was ~10x the
+ *    viewport itself (measured: 2205 tiles/source at z11).
+ * 3. `getTileBoundingVolume` ignored its `wrap` argument, so every in-window
+ *    tile was requested at ALL traversal-seeded wraps, not just the one(s)
+ *    actually on screen (measured: 175 = 25x7 at z8).
+ *
+ * v2 replaces sampling with an analytic window computed directly from the
+ * transform in `computeViewportWindow` (see its own doc comment) -- bounded
+ * by construction at every zoom, so both `fullWorldBBox` and the round-trip
+ * check are gone entirely (not merely relaxed). `getTileBoundingVolume` is
+ * now wrap-aware (Mechanism 3's fix): a tile's absolute longitude interval
+ * is shifted by `360 * wrap` before being compared to the window, so only
+ * the wrap(s) actually overlapping the window pass.
+ *
+ * Assumptions carried over from v1, unchanged: bearing/pitch are 0
+ * project-wide (recorded limitation, not solved here); lambda0 === center.lng
+ * (the design's own center-tracking invariant, see `equal_earth_coordinate.ts`).
+ * New in v2: the longitude half-span uses the MORE CONSERVATIVE (smaller) of
+ * the two latitude extremes' x-scales, which slightly over-fetches near the
+ * poles rather than under-fetching -- see `computeViewportWindow`.
  */
 
-// Small fixed-degree safety margin on every side of the computed bbox: pure
-// boundary-flapping insurance (an edge sample landing exactly on a tile
-// edge), not a cartographic claim. Over-fetch is acceptable per the plan.
-const BBOX_PAD_DEGREES = 1;
+// Screen-space safety margin, in pixels, added to the viewport half-extent
+// on every side before converting to unit-world/geographic terms --
+// screen-proportional insurance for tile buffers/antialiasing at the edge of
+// the viewport. Replaces v1's fixed-DEGREES pad entirely: a pixel pad scales
+// correctly with zoom by construction, where a degree pad did not (see the
+// module doc comment, Mechanism 2).
+const PAD_PX = 64;
 
-// A screen-space round trip (unproject then reproject) further than this
-// counts as "outside the projection outline" -- see the design note for why
-// this is a round-trip check rather than a longitude-magnitude check.
-// Legitimate samples measured at ~0px; invalid ones at 50px+, so this has
-// enormous headroom in either direction.
-const ROUND_TRIP_TOLERANCE_PX = 1;
-
-type GeoBBox = {
+type GeoWindow = {
     latMin: number;
     latMax: number;
     /**
-     * Longitude window in "whatever continuous numbering the 8 viewport
-     * samples produced" -- deliberately NOT wrapped into [-180, 180]. May
-     * legitimately span outside that range (e.g. lngHi = 214 means "34
-     * degrees past the antimeridian"). `lngRef` (the window's own midpoint)
-     * is what tile longitudes get normalized against in `getTileBoundingVolume`,
-     * NOT `transform.center.lng` -- the window isn't necessarily centered there.
+     * Longitude window in CONTINUOUS (unwrapped) numbering, centered on
+     * `transform.center.lng` (already normalized by the transform -- see
+     * the design's lambda0-tracking invariant). May legitimately span
+     * outside [-180, 180] (e.g. lngHi = 214 means "34 degrees past the
+     * antimeridian"); no modular arithmetic is applied here or in
+     * `getTileBoundingVolume`.
      */
     lngLo: number;
     lngHi: number;
-    lngRef: number;
 };
 
-function fullWorldBBox(lngRef: number): GeoBBox {
-    return {latMin: -90, latMax: 90, lngLo: lngRef - 180, lngHi: lngRef + 180, lngRef};
-}
-
 /**
- * Shifts `lng` by a multiple of 360 degrees so it lands within
- * `[lngRef - 180, lngRef + 180)` -- the standard shortest-signed-angular-
- * difference trick. Used only on the tile side (see design note): the
- * viewport samples themselves are used as their raw, unshifted values.
+ * Builds the current viewport's geographic window directly from the
+ * transform's own state -- no unprojection sampling, no round-trip
+ * validation, no full-world fallback. Bounded at every zoom by
+ * construction: as zoom decreases the window widens smoothly toward the
+ * whole world (correct behavior, not a fallback path).
+ *
+ * Relies on the project-wide bearing/pitch === 0 assumption (see the module
+ * doc comment): under that assumption the viewport is an axis-aligned
+ * rectangle in unit-world space centered on the transform's center point,
+ * which is exactly what makes an analytic (rather than sampled) window
+ * possible.
  */
-function normalizeLngNear(lng: number, lngRef: number): number {
-    const delta = lng - lngRef;
-    const wrapped = ((delta + 180) % 360 + 360) % 360 - 180;
-    return lngRef + wrapped;
-}
+function computeViewportWindow(transform: IReadonlyTransform): GeoWindow {
+    const {width, height, worldSize, center} = transform;
 
-/**
- * Unprojects the 4 viewport corners and 4 edge midpoints through the
- * transform's own inverse, validates each via a screen-space round trip, and
- * returns either a tight (but padded) bbox around the 8 samples, or the
- * full-world bbox if any sample looks like it came from outside the true
- * projection outline (or the samples still span the full globe regardless).
- */
-function computeViewportGeoBBox(transform: IReadonlyTransform): GeoBBox {
-    const {width, height} = transform;
-    const lngRef = transform.center.lng;
+    // Viewport half-extent, screen px -> unit-world, with the pixel pad
+    // folded in before the division so it scales with zoom automatically.
+    const xHalfUnit = (width / 2 + PAD_PX) / worldSize;
+    const yHalfUnit = (height / 2 + PAD_PX) / worldSize;
 
-    const samplePoints = [
-        new Point(0, 0), new Point(width / 2, 0), new Point(width, 0),
-        new Point(width, height / 2),
-        new Point(width, height), new Point(width / 2, height), new Point(0, height),
-        new Point(0, height / 2),
-    ];
+    const centerY = equalEarthWorldFromLngLat(center.lng, center.lat).y;
 
-    const rawLngs: number[] = [];
-    const rawLats: number[] = [];
+    // Clamp the world-y interval into the world's valid y range (the pole
+    // lines) -- derived, not hardcoded, from the same forward function used
+    // everywhere else in this codebase (`equal_earth_transform.ts`'s own
+    // vertical clamp uses the identical constants).
+    const yLo = clamp(centerY - yHalfUnit, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE);
+    const yHi = clamp(centerY + yHalfUnit, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE);
 
-    for (const point of samplePoints) {
-        const location = transform.screenPointToLocation(point);
-        const {lng, lat} = location;
-        if (!isFinite(lng) || !isFinite(lat)) {
-            return fullWorldBBox(lngRef);
-        }
-        // Round-trip validity check (see module doc comment / design note):
-        // forward-project the SAME (unwrapped) lng/lat this came from and
-        // compare to the original screen point. Do not wrap lng first -- x
-        // is linear in the (unwrapped) longitude, not periodic, so wrapping
-        // would compare the wrong point and falsely reject legitimate
-        // antimeridian-crossing samples.
-        const roundTrip = transform.locationToScreenPoint(location);
-        const dx = roundTrip.x - point.x;
-        const dy = roundTrip.y - point.y;
-        if (Math.hypot(dx, dy) > ROUND_TRIP_TOLERANCE_PX) {
-            return fullWorldBBox(lngRef);
-        }
-        rawLngs.push(lng);
-        rawLats.push(lat);
-    }
+    // y-down: smaller y is farther north, i.e. higher latitude.
+    const latMax = latFromEqualEarthWorldY(yLo);
+    const latMin = latFromEqualEarthWorldY(yHi);
 
-    const lngLo = Math.min(...rawLngs);
-    const lngHi = Math.max(...rawLngs);
-    if (lngHi - lngLo >= 360) {
-        // Degenerate/whole-world span; use the canonical full-world form
-        // rather than an oddly-wide-but-not-quite-360 interval. Shouldn't
-        // happen once the round-trip check above has screened samples --
-        // kept as cheap additional insurance.
-        return fullWorldBBox(lngRef);
-    }
-
-    const latMin = Math.min(...rawLats);
-    const latMax = Math.max(...rawLats);
+    // The x-per-degree scale shrinks toward the poles, so the min over the
+    // two latitude extremes bounds the widest in-view longitude span
+    // (evaluated at both ends -- deliberately not assumed monotonic).
+    // Always > 0 including at +-90 (Equal Earth's poles are lines, not
+    // points -- see `equalEarthXScaleAtLat`'s own doc comment), so this
+    // division is always safe.
+    const minScale = Math.min(equalEarthXScaleAtLat(latMin), equalEarthXScaleAtLat(latMax));
+    const lngHalfSpan = Math.min(180, xHalfUnit / minScale);
 
     return {
-        latMin: clamp(latMin - BBOX_PAD_DEGREES, -90, 90),
-        latMax: clamp(latMax + BBOX_PAD_DEGREES, -90, 90),
-        lngLo: lngLo - BBOX_PAD_DEGREES,
-        lngHi: lngHi + BBOX_PAD_DEGREES,
-        lngRef: (lngLo + lngHi) / 2,
+        latMin,
+        latMax,
+        lngLo: center.lng - lngHalfSpan,
+        lngHi: center.lng + lngHalfSpan,
     };
 }
 
@@ -149,7 +152,7 @@ function computeViewportGeoBBox(transform: IReadonlyTransform): GeoBBox {
  * `IBoundingVolume` whose intersection tests ignore the frustum/plane they
  * are given and return a precomputed verdict instead. See the module doc
  * comment for why: tile visibility here is decided entirely in geography
- * space (tile lat/lng rectangle vs. viewport geographic bbox), not by
+ * space (tile lat/lng rectangle vs. viewport geographic window), not by
  * testing real geometry against the camera frustum.
  */
 class PrecomputedVerdictVolume implements IBoundingVolume {
@@ -166,14 +169,13 @@ class PrecomputedVerdictVolume implements IBoundingVolume {
 }
 
 // Never Full (see design note): a tile "overlaps" or it doesn't. Full would
-// mark descendants already-visible and skip their own checks, which is only
-// honest for the full-world bbox case, and getting that distinction right
-// isn't worth the risk for a naive v1.
+// mark descendants already-visible and skip their own checks, which isn't
+// worth the risk here.
 const TILE_MAYBE_VISIBLE: IBoundingVolume = new PrecomputedVerdictVolume(IntersectionResult.Partial);
 const TILE_NOT_VISIBLE: IBoundingVolume = new PrecomputedVerdictVolume(IntersectionResult.None);
 
 export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDetailsProvider {
-    private _bbox: GeoBBox = fullWorldBBox(0);
+    private _window: GeoWindow = {latMin: -90, latMax: 90, lngLo: -180, lngHi: 180};
 
     /**
      * Only consumed when `allowVariableZoom` returns true (never, for Stage
@@ -194,14 +196,14 @@ export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDeta
     }
 
     /**
-     * Stage B step 8: `allowWorldCopies()` below now returns true, so
-     * `parentWrap` is no longer always 0 -- this matches
+     * Stage B step 8: `allowWorldCopies()` below returns true, so
+     * `parentWrap` is not always 0 -- this matches
      * `MercatorCoveringTilesDetailsProvider.getWrap` exactly (both just pass
      * `parentWrap` through unchanged; the shared traversal in
      * `covering_tiles.ts` is what seeds the initial +-1..+-3 wrap values via
-     * `renderWorldCopies && allowWorldCopies()`). East/west antimeridian
-     * coverage within a single wrap still comes from the longitude-window
-     * arithmetic in `getTileBoundingVolume`, unchanged from Stage A.
+     * `renderWorldCopies && allowWorldCopies()`). Which of those seeded
+     * wraps actually survive to the result is now decided by the
+     * wrap-aware longitude comparison in `getTileBoundingVolume` (v2).
      */
     getWrap(_centerCoord: MercatorCoordinate, _tileID: {x: number; y: number; z: number}, parentWrap: number): number {
         return parentWrap;
@@ -211,72 +213,60 @@ export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDeta
      * The seam: the only provider method the shared traversal hands the live
      * `transform`, called exactly once per `coveringTiles()` before any tile
      * is visited. Repurposed as a "begin frame" hook to compute and cache
-     * this call's geographic bbox. Always returns false: Stage A has no
-     * pitch/tilt correctness (recorded in the step 5 notes), so there is no
-     * LOD-by-distance concept to offer yet.
+     * this call's geographic window (v2: `computeViewportWindow`, an
+     * analytic construction -- no unprojection sampling). Always returns
+     * false: Stage A has no pitch/tilt correctness (recorded in the step 5
+     * notes), so there is no LOD-by-distance concept to offer yet.
      */
     allowVariableZoom(transform: IReadonlyTransform, _options: CoveringTilesOptionsInternal): boolean {
-        this._bbox = computeViewportGeoBBox(transform);
+        this._window = computeViewportWindow(transform);
         return false;
     }
 
     /**
-     * Stage B step 8 (Mechanism 2): true, matching Mercator now -- Equal
+     * Stage B step 8 (Mechanism 2): true, matching Mercator -- Equal
      * Earth's plane genuinely tiles with repeated world copies (the "banana
      * tiling" fact in the design doc: shifting lambda by 360 degrees shifts
      * x by exactly 360*k(phi) at every latitude, so neighboring copies
      * partition the plane with no overlap or gap). Combined with
-     * `getVisibleUnwrappedCoordinates`'s now-real wrap enumeration, this lets
+     * `getVisibleUnwrappedCoordinates`'s real wrap enumeration, this lets
      * `renderWorldCopies` actually render copies either side of the seam,
      * which G1/G2 (fixed outline, seam continuity) depend on.
      *
-     * KNOWN CAVEAT (not chased further, see design doc's naive-v1 framing):
-     * `getTileBoundingVolume` below decides visibility from a tile's own
-     * geographic lat/lng rectangle against the cached viewport bbox and does
-     * NOT consider `wrap` at all. When multiple wraps are pushed by the
-     * shared traversal, every wrap branch for a given canonical tile gets an
-     * IDENTICAL verdict, so a tile within the geographic window is requested
-     * at every enumerated wrap, not only the wrap(s) actually on screen. This
-     * is over-fetch, not a correctness bug (each requested copy still
-     * renders in its real position via the wrap-aware
-     * `getVisibleUnwrappedCoordinates` + `getProjectionData` shift) -- see
-     * the headless gate results/known-defects list for whether this shows up
-     * as a real problem in practice.
+     * v2: `getTileBoundingVolume` below now considers `wrap` (Mechanism 3's
+     * fix, see the module doc comment) -- a tile is only requested at the
+     * wrap(s) whose shifted longitude interval actually overlaps the
+     * viewport window, not at every traversal-seeded wrap unconditionally.
      */
     allowWorldCopies(): boolean {
         return true;
     }
 
-    getTileBoundingVolume(tileID: {x: number; y: number; z: number}, _wrap: number, _elevation: number, _options: CoveringTilesOptionsInternal): IBoundingVolume {
+    getTileBoundingVolume(tileID: {x: number; y: number; z: number}, wrap: number, _elevation: number, _options: CoveringTilesOptionsInternal): IBoundingVolume {
         const numTiles = 1 << tileID.z;
-        const bbox = this._bbox;
+        const window = this._window;
 
-        if (numTiles === 1) {
-            // z=0: the single root tile spans all longitudes by definition,
-            // and excluding it would prune the entire traversal. Also
-            // sidesteps a real degenerate case: a tile whose own raw width
-            // is a full 360 degrees has no single well-defined normalized
-            // representative (both its edges are the same antimeridian,
-            // approached from opposite sides).
-            return TILE_MAYBE_VISIBLE;
-        }
-
-        const tileWidthDegrees = 360 / numTiles;
-        const midLngRaw = lngFromMercatorX((tileID.x + 0.5) / numTiles);
-        const midLngNorm = normalizeLngNear(midLngRaw, bbox.lngRef);
-        const tileLo = midLngNorm - tileWidthDegrees / 2;
-        const tileHi = midLngNorm + tileWidthDegrees / 2;
-        const lngOverlap = tileHi >= bbox.lngLo && tileLo <= bbox.lngHi;
+        // With continuous (unwrapped) longitude numbering there is no
+        // modular ambiguity, so the z=0 root tile needs no special case:
+        // lngFromMercatorX(0) / lngFromMercatorX(1) already evaluate to
+        // exactly -180 / 180, so the root's shifted interval is
+        // [-180, 180] + 360*wrap, tested like any other tile. When the
+        // window spans the whole world (low zoom / world-fits case) this
+        // still passes, so the traversal still descends -- not a fallback,
+        // just the general case degenerating correctly.
+        const tileLngLo = lngFromMercatorX(tileID.x / numTiles) + 360 * wrap;
+        const tileLngHi = lngFromMercatorX((tileID.x + 1) / numTiles) + 360 * wrap;
+        const lngOverlap = tileLngHi >= window.lngLo && tileLngLo <= window.lngHi;
 
         const tileLatMax = latFromMercatorY(tileID.y / numTiles);
         const tileLatMin = latFromMercatorY((tileID.y + 1) / numTiles);
-        const latOverlap = tileLatMax >= bbox.latMin && tileLatMin <= bbox.latMax;
+        const latOverlap = tileLatMax >= window.latMin && tileLatMin <= window.latMax;
 
         return (lngOverlap && latOverlap) ? TILE_MAYBE_VISIBLE : TILE_NOT_VISIBLE;
     }
 
     prepareNextFrame(): void {
         // No cross-frame cache to maintain (unlike Globe's BoundingVolumeCache):
-        // the geographic bbox is recomputed fresh every coveringTiles() call.
+        // the geographic window is recomputed fresh every coveringTiles() call.
     }
 }

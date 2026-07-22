@@ -4,8 +4,8 @@ import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {coveringTiles} from './covering_tiles.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
 
-function createTransform(width = 1024, height = 768): EqualEarthTransform {
-    const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+function createTransform(width = 1024, height = 768, renderWorldCopies = false): EqualEarthTransform {
+    const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies});
     transform.resize(width, height);
     return transform;
 }
@@ -24,7 +24,7 @@ function keyOf(tile: OverscaledTileID): string {
     return `${tile.canonical.z}/${tile.canonical.x}/${tile.canonical.y}`;
 }
 
-describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTiles)', () => {
+describe('EqualEarthCoveringTilesDetailsProvider (analytic window v2, via coveringTiles)', () => {
     describe('full-world views cover every tile at the covering zoom', () => {
         test('z0 view (tileSize matched to transform) covers just the root tile', () => {
             const transform = createTransform();
@@ -131,38 +131,45 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
     });
 
     describe('east-west (antimeridian) wrap', () => {
-        test('(170, 0) z2 enumerates tiles on both sides of the seam (x near 0 AND x near max)', () => {
-            const transform = createTransform();
+        // v2: the analytic window is centered on `center.lng` and does NOT
+        // itself wrap -- when the window's continuous span crosses +-180,
+        // the "other side" of the seam is only reachable via a genuine
+        // world-copy wrap (getTileBoundingVolume's `+ 360*wrap` term), which
+        // requires `renderWorldCopies: true` so the traversal seeds wraps
+        // beyond 0 (see `allowWorldCopies`/`getWrap`). This replaces v1's
+        // wrap-INDEPENDENT trick (`normalizeLngNear`, deleted) that faked
+        // seam coverage at wrap 0 alone regardless of `renderWorldCopies`.
+        test('(170, 0) z2 enumerates tiles on both sides of the seam (x near max at wrap 0, x near 0 at wrap 1)', () => {
+            const transform = createTransform(1024, 768, true);
             transform.setZoom(2);
             transform.setCenter(new LngLat(170, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             expect(tiles.length).toBeGreaterThan(0);
             const commonZ = tiles[0].canonical.z;
             const numTiles = 1 << commonZ;
-            const xs = new Set(tiles.filter(t => t.canonical.z === commonZ).map(t => t.canonical.x));
-            expect(xs.has(0)).toBe(true);
-            expect(xs.has(numTiles - 1)).toBe(true);
-            // Every returned tile is wrap 0 -- Stage A is single-world-copy;
-            // east-west coverage comes from the x-index range, not wrap.
-            for (const tile of tiles) {
-                expect(tile.wrap).toBe(0);
-            }
+            const atCommonZ = tiles.filter(t => t.canonical.z === commonZ);
+            // East side of the seam: on-screen directly, wrap 0.
+            expect(atCommonZ.some(t => t.wrap === 0 && t.canonical.x === numTiles - 1)).toBe(true);
+            // West side of the seam: only reachable as the next world copy
+            // east of center, wrap 1 (center.lng=170 -> window extends past
+            // +180 rather than below -180).
+            expect(atCommonZ.some(t => t.wrap === 1 && t.canonical.x === 0)).toBe(true);
         });
 
-        test('(-170, 0) z2 also enumerates tiles on both sides of the seam', () => {
-            const transform = createTransform();
+        test('(-170, 0) z2 also enumerates tiles on both sides of the seam (x near 0 at wrap 0, x near max at wrap -1)', () => {
+            const transform = createTransform(1024, 768, true);
             transform.setZoom(2);
             transform.setCenter(new LngLat(-170, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             expect(tiles.length).toBeGreaterThan(0);
             const commonZ = tiles[0].canonical.z;
             const numTiles = 1 << commonZ;
-            const xs = new Set(tiles.filter(t => t.canonical.z === commonZ).map(t => t.canonical.x));
-            expect(xs.has(0)).toBe(true);
-            expect(xs.has(numTiles - 1)).toBe(true);
+            const atCommonZ = tiles.filter(t => t.canonical.z === commonZ);
+            expect(atCommonZ.some(t => t.wrap === 0 && t.canonical.x === 0)).toBe(true);
+            expect(atCommonZ.some(t => t.wrap === -1 && t.canonical.x === numTiles - 1)).toBe(true);
         });
 
-        test('deep zoom directly on the antimeridian produces a tight (non-full-world) wrapped bbox', () => {
+        test('deep zoom directly on the antimeridian produces a tight (bounded, not full-world) result', () => {
             const transform = createTransform();
             transform.setZoom(8);
             transform.setCenter(new LngLat(179.5, 0));
@@ -170,8 +177,9 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
             expect(tiles.length).toBeGreaterThan(0);
             // A full-world z8 result would be 256x256 = 65536 tiles; a tight
             // neighborhood straddling the seam should be a handful of tiles,
-            // not any meaningful fraction of that (proves the tight
-            // wrapped-bbox path, not the full-world fallback, is firing).
+            // not any meaningful fraction of that (proves the analytic
+            // window stays bounded here, not that some fallback is firing --
+            // v2 has no fallback path at all).
             expect(tiles.length).toBeLessThan(100);
             const xs = new Set(tiles.map(t => t.canonical.x));
             const numTiles = 1 << tiles[0].canonical.z;
@@ -179,12 +187,45 @@ describe('EqualEarthCoveringTilesDetailsProvider (naive bbox v1, via coveringTil
         });
 
         test('no duplicate tile IDs when straddling the antimeridian', () => {
-            const transform = createTransform();
+            const transform = createTransform(1024, 768, true);
             transform.setZoom(2);
             transform.setCenter(new LngLat(170, 0));
             const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
             const keys = tiles.map(t => `${t.wrap}/${keyOf(t)}`);
             expect(new Set(keys).size).toBe(keys.length);
+        });
+
+        test('wrap exactness: center lng 180 requests exactly the seam-adjacent wraps (0 and 1), never |wrap| >= 2', () => {
+            const transform = createTransform(1024, 768, true);
+            transform.setZoom(4);
+            transform.setCenter(new LngLat(180, 0));
+            const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
+            const wraps = new Set(tiles.map(t => t.wrap));
+            expect(wraps.has(0)).toBe(true);
+            expect(wraps.has(1)).toBe(true);
+            for (const wrap of wraps) {
+                expect(Math.abs(wrap)).toBeLessThan(2);
+            }
+        });
+
+        test('wrap exactness: center lng 0 requests wrap 0 only', () => {
+            const transform = createTransform(1024, 768, true);
+            transform.setZoom(4);
+            transform.setCenter(new LngLat(0, 0));
+            const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
+            const wraps = new Set(tiles.map(t => t.wrap));
+            expect(wraps).toEqual(new Set([0]));
+        });
+    });
+
+    describe('boundedness (session 0013 regression: naive v1 froze the page at z12+)', () => {
+        test('z12, center (30, 50), 1100x700 viewport: covering set stays small', () => {
+            const transform = createTransform(1100, 700);
+            transform.setZoom(12);
+            transform.setCenter(new LngLat(30, 50));
+            const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 22});
+            expect(tiles.length).toBeGreaterThan(0);
+            expect(tiles.length).toBeLessThan(60);
         });
     });
 });
