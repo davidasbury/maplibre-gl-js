@@ -54,22 +54,44 @@
         }
 
         /* Panel is pointer-events:none so map drags pass through it; the
-           tissot checkbox is the one interactive control, so only it (and
-           its label, for click-to-toggle) opt back into pointer events. */
-        #diag-tissot-row,
-        #diag-tissot-row label {
+           checkbox rows are the interactive controls, so only they (and
+           their labels, for click-to-toggle) opt back into pointer events.
+           Gate-safety note: the extra mode rows added for step 8(a) grow the
+           panel to ~185px tall -- still clear of every pixel-sampled region
+           (center row y=350, center 200x200 patch x>=450) per the comment
+           above. Keep new rows from pushing past that. */
+        .diag-toggle,
+        .diag-toggle label {
             pointer-events: auto;
+        }
+
+        /* Antimeridian clip mask (step 8 remainder (a)): a screen-space
+           canvas painted white (the page's void color -- the gates'
+           isVoidRGB matches r,g,b > 250) outside the projection outline.
+           Below the diag panel (z 10), above the map canvas; never
+           interactive. */
+        #clip-mask {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 5;
+            pointer-events: none;
         }
     </style>
 </head>
 
 <body>
 <div id="map"></div>
+<canvas id="clip-mask"></canvas>
 <div id="diag">
     <div>zoom: <span id="diag-zoom">&ndash;</span></div>
     <div>proj ratio: <span id="diag-blend">&ndash;</span> <span style="opacity:.6">(EE=1)</span></div>
     <div><span id="diag-tiles">tiles loading&hellip;</span> <span id="diag-tiles-glyph">&#9676;</span></div>
-    <div id="diag-tissot-row" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
+    <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
+    <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Also relaxes the zoom floor from pole-fit to outline-fit so the whole outline is visible with void margins."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label></div>
+    <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp). Overridden while demotiles is on."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
+    <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required). Takes precedence over choropleth."><label for="diag-demotiles"><input type="checkbox" id="diag-demotiles" disabled /> demotiles</label></div>
 </div>
 <script type="module">
     import * as maplibregl from '../../dist/maplibre-gl-dev.mjs';
@@ -111,6 +133,22 @@
     // (5 quantile classes). Honest for demonstrating equal-area RENDERING
     // even without real per-country statistics attached to the polygons.
     const useChoropleth = params.get('choropleth') === '1';
+
+    // Step 8 remainder (a) antimeridian clip mode: `?clip=1` masks content
+    // beyond lambda0+-180deg to void at the projection outline (the Jenny-
+    // demo look; lambda0 keeps tracking the pan, per owner round 2). Two
+    // cooperating parts: (1) the engine-side `outlineFitZoomFloor` flag on
+    // EqualEarthTransform relaxes the zoom floor from pole-fit to
+    // outline-fit -- without it the seam sits at +-worldSize/2 px from
+    // screen center, which is beyond the viewport edge at every reachable
+    // zoom on a normal-aspect viewport, and the mask would never be
+    // visible; (2) a page-side screen-space canvas mask (#clip-mask) that
+    // samples the two seam meridians via map.project() each frame and
+    // paints everything outside that outline void-white. The mask is the
+    // demo-grade rendering of the clip; the engine stencil pre-pass stays
+    // the eventual in-engine/upstream version. As with tissot, the URL
+    // param is just the checkbox's initial state.
+    const useClip = params.get('clip') === '1';
 
     // f32-ladder diagnostic param: `?srcmax=N` caps the GeoJSON sources'
     // maxzoom so tiles overzoom past N. This bounds the covering-tiles
@@ -263,38 +301,20 @@
         source.setData({type: 'FeatureCollection', features: tissotFeatures});
     }
 
-    let localStyle;
-    if (!useDemotiles && useChoropleth) {
-        localStyle = {
-            version: 8,
-            projection: {type: 'equal-earth'},
-            sources: {
-                choropleth: {
-                    type: 'geojson',
-                    data: await buildChoroplethSource()
-                },
-                graticule: {
-                    type: 'geojson',
-                    data: graticule
-                }
-            },
-            layers: [
-                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
-                {
-                    id: 'choropleth-fill',
-                    type: 'fill',
-                    source: 'choropleth',
-                    paint: {
-                        'fill-color': ['step', ['get', 'bucket'], CHOROPLETH_RAMP[0], 1, CHOROPLETH_RAMP[1], 2, CHOROPLETH_RAMP[2], 3, CHOROPLETH_RAMP[3], 4, CHOROPLETH_RAMP[4]],
-                        'fill-opacity': 0.9
-                    }
-                },
-                {id: 'choropleth-outline', type: 'line', source: 'choropleth', paint: {'line-color': '#4d4d4d', 'line-width': 0.4}},
-                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
-            ]
-        };
-    } else if (!useDemotiles) {
-        localStyle = {
+    // Style builders (mode-checkbox rework): the three view styles are now
+    // functions so the live checkboxes can swap them at runtime, not just
+    // the URL params at load. Semantics unchanged from the original one-shot
+    // `localStyle` block: demotiles takes precedence over choropleth, and
+    // `srcMaxOpt` applies to the plain land style only (its historical
+    // scope -- the f32 ladder never ran choropleth).
+    let choroplethSourceData = null;
+    async function getChoroplethSourceData() {
+        if (!choroplethSourceData) choroplethSourceData = await buildChoroplethSource();
+        return choroplethSourceData;
+    }
+
+    function buildLandStyle() {
+        return {
             version: 8,
             projection: {type: 'equal-earth'},
             sources: {
@@ -317,6 +337,48 @@
         };
     }
 
+    async function buildChoroplethStyle() {
+        return {
+            version: 8,
+            projection: {type: 'equal-earth'},
+            sources: {
+                choropleth: {
+                    type: 'geojson',
+                    data: await getChoroplethSourceData()
+                },
+                graticule: {
+                    type: 'geojson',
+                    data: graticule
+                }
+            },
+            layers: [
+                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                {
+                    id: 'choropleth-fill',
+                    type: 'fill',
+                    source: 'choropleth',
+                    paint: {
+                        'fill-color': ['step', ['get', 'bucket'], CHOROPLETH_RAMP[0], 1, CHOROPLETH_RAMP[1], 2, CHOROPLETH_RAMP[2], 3, CHOROPLETH_RAMP[3], 4, CHOROPLETH_RAMP[4]],
+                        'fill-opacity': 0.9
+                    }
+                },
+                {id: 'choropleth-outline', type: 'line', source: 'choropleth', paint: {'line-color': '#4d4d4d', 'line-width': 0.4}},
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+            ]
+        };
+    }
+
+    const DEMOTILES_URL = 'https://demotiles.maplibre.org/style.json';
+    const DEMOTILES_SET_STYLE_OPTIONS = {
+        transformStyle: (_prev, next) => ({...next, projection: {type: 'equal-earth'}})
+    };
+
+    async function applyStyle(demotiles, choropleth) {
+        if (demotiles) map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
+        else if (choropleth) map.setStyle(await buildChoroplethStyle());
+        else map.setStyle(buildLandStyle());
+    }
+
     // `transformStyle` is a `setStyle()` option, not a Map constructor
     // option: the constructor's own internal initial `this.setStyle(...)`
     // call builds a fresh options object that never forwards a
@@ -332,13 +394,7 @@
         center: [centerLng, centerLat],
         zoom
     });
-    if (useDemotiles) {
-        map.setStyle('https://demotiles.maplibre.org/style.json', {
-            transformStyle: (_prev, next) => ({...next, projection: {type: 'equal-earth'}})
-        });
-    } else {
-        map.setStyle(localStyle);
-    }
+    await applyStyle(useDemotiles, useChoropleth);
     window.map = map;
 
     // Tissot mode wiring: source + 3 layers, added/removed through these two
@@ -397,18 +453,154 @@
     // stay attached across checkbox on/off cycles without extra bookkeeping.
     map.on('moveend', updateTissotRatios);
 
-    // Checkbox starts `disabled` in the HTML (unsafe to touch the style
-    // before the map has one); enable it and sync its initial checked state
-    // from the URL param only once 'load' fires.
+    // Antimeridian clip mask. Redrawn on every 'render' (cheap: 362
+    // map.project() calls -- forward polynomial only -- plus one even-odd
+    // fill). The seam path is the lambda0+180 meridian sampled north-to-
+    // south, then the lambda0-180 meridian south-to-north; the implicit
+    // connecting segments ARE the pole lines (straight in Equal Earth, and
+    // screen space is an affine image of world space at bearing/pitch 0, so
+    // straight chords are exact). At zooms above outline-fit the seam lies
+    // outside the viewport and the fill degenerates to nothing visible --
+    // correct by construction, no special-casing.
+    let clipOn = false; // becomes useClip once 'load' fires (map.project needs a live transform)
+    const clipCanvas = document.getElementById('clip-mask');
+    const clipCtx = clipCanvas.getContext('2d');
+    const CLIP_LAT_STEP_DEG = 1;
+
+    function drawClipMask() {
+        const dpr = window.devicePixelRatio || 1;
+        const w = clipCanvas.clientWidth;
+        const h = clipCanvas.clientHeight;
+        if (clipCanvas.width !== Math.round(w * dpr) || clipCanvas.height !== Math.round(h * dpr)) {
+            clipCanvas.width = Math.round(w * dpr);
+            clipCanvas.height = Math.round(h * dpr);
+        }
+        clipCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        clipCtx.clearRect(0, 0, w, h);
+        if (!clipOn) return;
+        const lng0 = map.getCenter().lng;
+        const seam = new Path2D();
+        let started = false;
+        for (let lat = 90; lat >= -90; lat -= CLIP_LAT_STEP_DEG) {
+            const p = map.project([lng0 + 180, lat]);
+            if (started) seam.lineTo(p.x, p.y);
+            else { seam.moveTo(p.x, p.y); started = true; }
+        }
+        for (let lat = -90; lat <= 90; lat += CLIP_LAT_STEP_DEG) {
+            const p = map.project([lng0 - 180, lat]);
+            seam.lineTo(p.x, p.y);
+        }
+        seam.closePath();
+        const mask = new Path2D();
+        mask.rect(-8, -8, w + 16, h + 16);
+        mask.addPath(seam);
+        // Exact void white: matches the page's own void (transparent map
+        // canvas over the white body) and the gates' isVoidRGB threshold.
+        clipCtx.fillStyle = '#ffffff';
+        clipCtx.fill(mask, 'evenodd');
+        clipCtx.strokeStyle = '#7a9cb8';
+        clipCtx.lineWidth = 1;
+        clipCtx.stroke(seam);
+    }
+    map.on('render', drawClipMask);
+    map.on('resize', drawClipMask);
+
+    // This fork's Map is composition-based: the live ITransform hangs off
+    // the internal `_camera`, NOT `map.transform` (that property does not
+    // exist on Map here -- discovered when the clip gate found it
+    // undefined, which also means the diag panel's tileZoom read below was
+    // silently dead until this rework). Debug-page-only access, fine to
+    // reach into an underscore field.
+    function mapTransform() {
+        return map._camera && map._camera.transform;
+    }
+
+    // Overlay survival across setStyle(): a style swap drops user-added
+    // sources/layers, so re-add the tissot overlay when the incoming style
+    // becomes usable. Also re-assert the outline-fit floor flag -- cheap
+    // insurance against the transform being rebuilt with the style.
+    let tissotOn = false;
+    map.on('style.load', () => {
+        if (tissotOn) addTissotOverlay();
+        const transform = mapTransform();
+        if (transform) transform.outlineFitZoomFloor = clipOn;
+    });
+
+    // Mode toggles write themselves back into the URL (replaceState, no
+    // reload) so the current view mode is always copyable into the headless
+    // gate/sweep workflows that drive this page by query string.
+    function setUrlParam(name, value) {
+        const url = new URL(window.location);
+        if (value === null) url.searchParams.delete(name);
+        else url.searchParams.set(name, value);
+        history.replaceState(null, '', url);
+    }
+
+    // Checkboxes start `disabled` in the HTML (unsafe to touch the style
+    // before the map has one); enable them and sync initial checked state
+    // from the URL params only once 'load' fires.
     map.on('load', () => {
         const tissotCheckbox = document.getElementById('diag-tissot');
+        const clipCheckbox = document.getElementById('diag-clip');
+        const choroplethCheckbox = document.getElementById('diag-choropleth');
+        const demotilesCheckbox = document.getElementById('diag-demotiles');
+
         tissotCheckbox.disabled = false;
         tissotCheckbox.checked = useTissot;
+        tissotOn = useTissot;
         if (useTissot) addTissotOverlay();
         tissotCheckbox.addEventListener('change', () => {
-            if (tissotCheckbox.checked) addTissotOverlay();
+            tissotOn = tissotCheckbox.checked;
+            if (tissotOn) addTissotOverlay();
             else removeTissotOverlay();
+            setUrlParam('tissot', tissotOn ? '1' : null);
         });
+
+        clipCheckbox.disabled = false;
+        clipCheckbox.checked = useClip;
+        if (useClip) {
+            mapTransform().outlineFitZoomFloor = true;
+            clipOn = true;
+            // Land at the outline-fit floor (the Jenny minimum-zoom state)
+            // unless the URL pinned an explicit zoom -- the pole-fit floor
+            // already clamped the default zoom before the flag existed.
+            if (!params.has('zoom')) map.jumpTo({zoom: 0});
+            drawClipMask();
+        }
+        clipCheckbox.addEventListener('change', () => {
+            const on = clipCheckbox.checked;
+            const transform = mapTransform();
+            transform.outlineFitZoomFloor = on;
+            clipOn = on;
+            if (on) {
+                // Zoom out to the outline-fit floor so the mode is
+                // immediately visible (0 clamps up to the floor).
+                map.jumpTo({zoom: 0});
+            } else {
+                // Re-apply the constraint at the current view so a
+                // below-pole-fit zoom clamps back up. jumpTo() no-ops on
+                // unchanged values (C4 gate caught this), so run the
+                // transform's own constrain and jump to its RESULT -- that
+                // differs whenever re-clamping is actually needed.
+                const constrained = transform.applyConstrain(map.getCenter(), map.getZoom());
+                map.jumpTo({center: constrained.center, zoom: constrained.zoom});
+            }
+            drawClipMask();
+            setUrlParam('clip', on ? '1' : null);
+        });
+
+        choroplethCheckbox.disabled = useDemotiles; // demotiles takes precedence
+        choroplethCheckbox.checked = useChoropleth;
+        demotilesCheckbox.disabled = false;
+        demotilesCheckbox.checked = useDemotiles;
+        function refreshStyleFromCheckboxes() {
+            choroplethCheckbox.disabled = demotilesCheckbox.checked;
+            applyStyle(demotilesCheckbox.checked, choroplethCheckbox.checked).catch(console.error);
+            setUrlParam('source', demotilesCheckbox.checked ? 'demotiles' : null);
+            setUrlParam('choropleth', choroplethCheckbox.checked ? '1' : null);
+        }
+        choroplethCheckbox.addEventListener('change', refreshStyleFromCheckboxes);
+        demotilesCheckbox.addEventListener('change', refreshStyleFromCheckboxes);
     });
 
     // Diagnostics panel (step-8 wishlist items 1/4/5; Tissot mode is
@@ -430,7 +622,7 @@
 
     function renderDiag() {
         if (diagEl.hidden) return;
-        const tileZoom = map.transform?.tileZoom;
+        const tileZoom = mapTransform()?.tileZoom;
         diagZoom.textContent = map.getZoom().toFixed(2) +
             (Number.isFinite(tileZoom) ? ` (tiles z${tileZoom})` : '');
         const t = map.style?.projection?.transitionState;
