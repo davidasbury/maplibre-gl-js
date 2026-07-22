@@ -502,7 +502,25 @@
                     const ctrl = new AbortController();
                     entry = {refs: 0, ctrl, promise: protocol.tile(params, ctrl)};
                     const clear = () => { if (inflight.get(params.url) === entry) inflight.delete(params.url); };
-                    entry.promise.then(clear, clear);
+                    // Non-abort failure: ALSO evict the archive's PMTiles
+                    // instance. pmtiles 4.4.1 caches directory promises
+                    // without evicting rejections (verified: after one
+                    // failed directory fetch, every later lookup re-serves
+                    // the cached rejection without touching the network) —
+                    // which would make the engine's errored-tile
+                    // retry-with-cooldown structurally unable to succeed.
+                    // A fresh instance rebuilds header+directory caches on
+                    // the next request (~200 ms once per failure burst).
+                    // Benign aborts (pan-away) keep the healthy instance.
+                    entry.promise.then(clear, (err) => {
+                        clear();
+                        if (!ctrl.signal.aborted && !(err && err.name === 'AbortError')) {
+                            const archive = /^pmtiles:\/\/(.+?\.pmtiles)/.exec(params.url);
+                            if (archive && protocol.tiles && protocol.tiles.delete) {
+                                protocol.tiles.delete(archive[1]);
+                            }
+                        }
+                    });
                     inflight.set(params.url, entry);
                 }
                 entry.refs++;
@@ -550,7 +568,11 @@
                 {id: 'land', type: 'fill', source: 'overture-base', 'source-layer': 'land', paint: {'fill-color': '#d8e8c8'}},
                 {id: 'land-cover', type: 'fill', source: 'overture-base', 'source-layer': 'land_cover', paint: {'fill-color': '#c2dcaa', 'fill-opacity': 0.5}},
                 {id: 'land-use', type: 'fill', source: 'overture-base', 'source-layer': 'land_use', minzoom: 8, paint: {'fill-color': '#cfe0b8', 'fill-opacity': 0.4}},
-                {id: 'water', type: 'fill', source: 'overture-base', 'source-layer': 'water', paint: {'fill-color': '#a4c8e1'}},
+                // Deliberately NOT the background color: drawn water and
+                // "nothing drawn" must never share a pixel value on a debug
+                // page (the 2026-07-22 odd-water misread cost two diagnosis
+                // sessions before this one-line fix).
+                {id: 'water', type: 'fill', source: 'overture-base', 'source-layer': 'water', paint: {'fill-color': '#93bedd'}},
                 {id: 'infrastructure', type: 'line', source: 'overture-base', 'source-layer': 'infrastructure', minzoom: 13, paint: {'line-color': '#b0a898', 'line-width': 1}},
                 {id: 'roads', type: 'line', source: 'overture-transportation', 'source-layer': 'segment', minzoom: 10, filter: ['==', ['get', 'subtype'], 'road'], paint: {'line-color': '#c4a986', 'line-width': 1.2}},
                 {id: 'buildings', type: 'fill', source: 'overture-buildings', 'source-layer': 'building', minzoom: 11, paint: {'fill-color': '#c9c1b6', 'fill-outline-color': '#a89f92'}},
