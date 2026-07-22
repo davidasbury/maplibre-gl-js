@@ -1,11 +1,11 @@
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
-import {MercatorCoordinate, mercatorZfromAltitude} from '../mercator_coordinate.ts';
+import {MercatorCoordinate, latFromMercatorY, mercatorZfromAltitude} from '../mercator_coordinate.ts';
 import Point from '@mapbox/point-geometry';
 import {clamp, createMat4f64, degreesToRadians, createIdentityMat4f32, zoomScale, type Mat4f32, type Mat4f64} from '../../util/util.ts';
 import {type mat2, mat4, vec3, vec4} from 'gl-matrix';
 import {UnwrappedTileID, OverscaledTileID, type CanonicalTileID, calculateTileKey} from '../../tile/tile_id.ts';
 import {interpolates} from '@maplibre/maplibre-gl-style-spec';
-import {type PointProjection, xyTransformMat4} from '../../symbol/projection.ts';
+import {type PointProjection} from '../../symbol/projection.ts';
 import {LngLatBounds} from '../lng_lat_bounds.ts';
 import {getMercatorHorizon, maxMercatorHorizonAngle, cameraMercatorCoordinateFromCenterAndRotation, calculateTileMatrix} from './mercator_utils.ts';
 import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld, equalEarthXScaleAtLat, latFromEqualEarthWorldY, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
@@ -937,16 +937,40 @@ export class EqualEarthTransform implements ITransform {
         throw new Error('Not implemented.'); // No need for this in equal earth transform
     }
 
+    /**
+     * CPU twin of the shader's `projectToEqualEarth` (see
+     * `_projection_equal_earth.vertex.glsl`). Symbol placement, collision
+     * boxes/circles, line-label layout and symbol `queryRenderedFeatures`
+     * all project through this method (Stage B step 9), so it must agree
+     * with where the GPU actually draws vertices. The previous (step 5)
+     * implementation multiplied raw tile coordinates by the mercator-planar
+     * per-tile pos matrix (`calculatePosMatrix`) — under this transform that
+     * places anchors where the *mercator* world would be, not where the
+     * Equal Earth shader bends them, which detached every collision box
+     * from its rendered label (step-9 root cause, also the session-0016
+     * symbol-qRF misses).
+     *
+     * Pipeline, matching the shader exactly: tile coords → mercator
+     * fraction with `wrap` folded in (longitude comes out UNWRAPPED, so
+     * Δλ stays continuous across the antimeridian for world copies — the
+     * CPU equivalent of the folded `tileMercatorCoords` uniform) → lng/lat
+     * → unit EE world coordinates keyed off the CURRENT `center.lng` (live
+     * λ0) → clip space via the same whole-world `equalEarthMatrix` the
+     * shader multiplies by. Elevation passes through as z exactly like the
+     * shader's `projectTileWithElevation` (terrain remains a non-goal;
+     * z is 0 in every non-terrain call).
+     */
     projectTileCoordinates(x: number, y: number, unwrappedTileID: UnwrappedTileID, getElevation: (x: number, y: number) => number): PointProjection {
-        const matrix = this.calculatePosMatrix(unwrappedTileID);
-        let pos;
-        if (getElevation) { // slow because of handle z-index
-            pos = [x, y, getElevation(x, y), 1] as vec4;
-            vec4.transformMat4(pos, pos, matrix);
-        } else { // fast because of ignore z-index
-            pos = [x, y, 0, 1] as vec4;
-            xyTransformMat4(pos, pos, matrix);
-        }
+        const canonical = unwrappedTileID.canonical;
+        const zoomScaleInv = 1.0 / (1 << canonical.z);
+        const mercatorX = (canonical.x + x / EXTENT) * zoomScaleInv + unwrappedTileID.wrap;
+        const mercatorY = (canonical.y + y / EXTENT) * zoomScaleInv;
+        const lng = mercatorX * 360 - 180;
+        const lat = latFromMercatorY(mercatorY);
+        const ee = equalEarthWorldFromLngLat(lng, lat, this.center.lng);
+        const elevation = getElevation ? getElevation(x, y) : 0;
+        const pos = [ee.x, ee.y, elevation, 1] as vec4;
+        vec4.transformMat4(pos, pos, this._equalEarthMatrix);
         const w = pos[3];
         return {
             point: new Point(pos[0] / w, pos[1] / w),

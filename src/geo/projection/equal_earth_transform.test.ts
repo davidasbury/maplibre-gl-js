@@ -5,6 +5,8 @@ import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {projectToEqualEarthWorldCoordinates, unprojectFromEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
 import {EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
+import {mercatorXfromLng, mercatorYfromLat} from '../mercator_coordinate.ts';
+import {EXTENT} from '../../data/extent.ts';
 
 // Shared with the source's own zFit derivation (defaultConstrain): the zoom
 // at which world content height exactly equals the viewport height. Kept
@@ -434,6 +436,82 @@ describe('EqualEarthTransform', () => {
                 expect(Number.isFinite(result.zoom)).toBe(true);
                 expect(result.zoom).toBe(0);
             });
+        });
+    });
+
+    describe('projectTileCoordinates (Stage B step 9: symbol placement projection)', () => {
+        // The contract these tests pin: projectTileCoordinates (the method
+        // symbol placement, collision and symbol queryRenderedFeatures
+        // project anchors through) must agree with locationToScreenPoint —
+        // i.e. with where the Equal Earth shader actually draws — for the
+        // same geographic point. The step-9 root cause was this method
+        // multiplying raw tile coordinates by the mercator-planar per-tile
+        // matrix instead.
+
+        // Tile addressing of a lng/lat at a given zoom + the in-tile
+        // fractional coordinates, mirroring how symbol anchors are stored
+        // (tile units 0..EXTENT within a canonical tile).
+        function tileCoordsFor(lng: number, lat: number, z: number, wrap: number = 0) {
+            const scale = 1 << z;
+            const mercX = mercatorXfromLng(lng);
+            const mercY = mercatorYfromLat(lat);
+            const tileX = Math.min(Math.floor(mercX * scale), scale - 1);
+            const tileY = Math.min(Math.floor(mercY * scale), scale - 1);
+            const inTileX = (mercX * scale - tileX) * EXTENT;
+            const inTileY = (mercY * scale - tileY) * EXTENT;
+            return {
+                unwrapped: new OverscaledTileID(z, wrap, z, tileX, tileY).toUnwrapped(),
+                x: inTileX,
+                y: inTileY
+            };
+        }
+
+        function clipToScreen(transform: EqualEarthTransform, clip: Point): Point {
+            return new Point(
+                (clip.x + 1) / 2 * transform.width,
+                (-clip.y + 1) / 2 * transform.height
+            );
+        }
+
+        test('agrees with locationToScreenPoint across latitudes and zooms (center.lng = 0)', () => {
+            const transform = createTransform(3);
+            for (const [lng, lat] of [[0, 0], [45, 30], [-120, -55], [170, 70], [-30, 82]]) {
+                for (const z of [0, 2, 5]) {
+                    const {unwrapped, x, y} = tileCoordsFor(lng, lat, z);
+                    const projection = transform.projectTileCoordinates(x, y, unwrapped, null);
+                    const viaScreen = transform.locationToScreenPoint(new LngLat(lng, lat));
+                    const viaTile = clipToScreen(transform, projection.point);
+                    expect(viaTile.x).toBeCloseTo(viaScreen.x, 4);
+                    expect(viaTile.y).toBeCloseTo(viaScreen.y, 4);
+                    expect(projection.signedDistanceFromCamera).toBeGreaterThan(0);
+                    expect(projection.isOccluded).toBe(false);
+                }
+            }
+        });
+
+        test('keys off the live central meridian (center.lng != 0)', () => {
+            const transform = createTransform(2, new LngLat(90, 0));
+            const {unwrapped, x, y} = tileCoordsFor(90, 20, 3);
+            const viaTile = clipToScreen(transform, transform.projectTileCoordinates(x, y, unwrapped, null).point);
+            const viaScreen = transform.locationToScreenPoint(new LngLat(90, 20));
+            expect(viaTile.x).toBeCloseTo(viaScreen.x, 4);
+            expect(viaTile.y).toBeCloseTo(viaScreen.y, 4);
+            // And the on-meridian point sits at the horizontal screen center
+            // (the lambda0-tracking invariant), pinning that the projection
+            // really used the CURRENT center longitude.
+            expect(viaTile.x).toBeCloseTo(transform.width / 2, 4);
+        });
+
+        test('world copies project with unwrapped longitude (wrap folded in, seam-continuous)', () => {
+            const transform = createTransform(2, new LngLat(170, 0));
+            // A point at lng -175 on wrap +1 is the copy at unwrapped +185:
+            // 15 degrees east of the central meridian, NOT 345 west.
+            const {unwrapped, x, y} = tileCoordsFor(-175, 10, 2, 1);
+            const viaTile = clipToScreen(transform, transform.projectTileCoordinates(x, y, unwrapped, null).point);
+            const viaScreen = transform.locationToScreenPoint(new LngLat(185, 10));
+            expect(viaTile.x).toBeCloseTo(viaScreen.x, 4);
+            expect(viaTile.y).toBeCloseTo(viaScreen.y, 4);
+            expect(viaTile.x).toBeGreaterThan(transform.width / 2);
         });
     });
 });
