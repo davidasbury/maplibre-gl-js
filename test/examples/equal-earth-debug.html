@@ -246,13 +246,15 @@
         return [toDeg(lambda2), toDeg(phi2)];
     }
 
-    // Centers on a 30-degree grid: lng -150..150 (11), lat -60..60 (5) --
-    // 55 circles total. Geometry is fixed at build time; only the `ratio`/
-    // `ratioLabel` properties are recomputed and pushed via setData().
+    // Centers: lng -150..150 every 30 (11 columns), lat -75..75 every 15
+    // (11 rows, densified from the original 30-degree rows per owner
+    // request 2026-07-22 -- adds +-15/+-45/+-75) -- 121 circles total.
+    // Geometry is fixed at build time; only the `ratio`/`ratioLabel`
+    // properties are recomputed and pushed via setData().
     function buildTissotFeatures() {
         const features = [];
         for (let lng = -150; lng <= 150; lng += 30) {
-            for (let lat = -60; lat <= 60; lat += 30) {
+            for (let lat = -75; lat <= 75; lat += 15) {
                 const ring = [];
                 for (let i = 0; i <= TISSOT_STEPS; i++) {
                     const bearing = (i % TISSOT_STEPS) * (360 / TISSOT_STEPS);
@@ -277,13 +279,13 @@
     // ground-equal sample offsets: the north/south pair is +-0.5 degrees of
     // latitude, and the east/west pair is +-0.5deg/cos(lat) degrees of
     // longitude so both pairs span the same ground distance (grid caps at
-    // +-60 degrees, so cos(lat) >= 0.5 -- no pole guard needed). Without the
-    // cos(lat) correction, a plain +-0.5deg longitude offset is a shorter
-    // ground distance at high latitude and the label stops describing the
-    // drawn ellipse. Mutates tissotFeatures in place, then pushes the whole
-    // collection back into the source. Expected: ~0.74 at the equator,
-    // rising above 1 toward +-60 (Equal Earth flattens high-latitude
-    // circles).
+    // +-75 degrees, so cos(lat) >= cos(75) ~ 0.26 -- still no pole guard
+    // needed). Without the cos(lat) correction, a plain +-0.5deg longitude
+    // offset is a shorter ground distance at high latitude and the label
+    // stops describing the drawn ellipse. Mutates tissotFeatures in place,
+    // then pushes the whole collection back into the source. Expected:
+    // ~0.74 at the equator, rising with latitude (~1.69 at +-60, steeper
+    // still at +-75 -- Equal Earth flattens high-latitude circles).
     function updateTissotRatios() {
         const source = map.getSource('tissot');
         if (!source) return;
@@ -401,15 +403,11 @@
     // functions so both the `?tissot=1` URL param (headless use) and the
     // live diagnostics-panel checkbox drive the same code path. Both
     // functions are idempotent (safe to call repeatedly or out of order).
-    // `beforeId` is only meaningful for the local styles (they always carry
-    // a `graticule` line layer as the top layer); demotiles has no such
-    // layer, so lookup finds nothing and the tissot layers land on top of
-    // the whole style, per spec.
+    // No `beforeId` anywhere: the indicatrices append LAST so they draw on
+    // top of every style layer (owner request 2026-07-22 -- they used to
+    // slot beneath the local styles' graticule lines).
     function addTissotOverlay() {
         if (map.getSource('tissot')) return;
-        const styleLayers = map.getStyle()?.layers || [];
-        const graticuleLayer = styleLayers.find((l) => l.id === 'graticule');
-        const beforeId = graticuleLayer ? graticuleLayer.id : undefined;
         map.addSource('tissot', {
             type: 'geojson',
             data: {type: 'FeatureCollection', features: tissotFeatures}
@@ -419,13 +417,13 @@
             type: 'fill',
             source: 'tissot',
             paint: {'fill-color': 'rgba(220,50,50,0.35)'}
-        }, beforeId);
+        });
         map.addLayer({
             id: 'tissot-outline',
             type: 'line',
             source: 'tissot',
             paint: {'line-color': '#8b0000', 'line-width': 1}
-        }, beforeId);
+        });
         map.addLayer({
             id: 'tissot-label',
             type: 'symbol',
@@ -437,7 +435,7 @@
                 'text-ignore-placement': true
             },
             paint: {'text-color': '#8b0000'}
-        }, beforeId);
+        });
         updateTissotRatios();
     }
 
