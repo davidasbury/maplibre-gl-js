@@ -2,8 +2,8 @@
 <html lang="en">
 
 <head>
-    <title>Equal Earth projection (debug)</title>
-    <meta property="og:description" content="Stage A Demo A check: land polygons rendered with the equal-earth projection." />
+    <title>Equal Earth projection (demo)</title>
+    <meta property="og:description" content="Equal-earth projection demo: land polygons, choropleth, demotiles and Overture basemaps with live diagnostics." />
     <meta charset='utf-8'>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel='stylesheet' href='../../dist/maplibre-gl.css' />
@@ -115,12 +115,16 @@
 
     // Step 6 sweep support: read center/zoom from the URL query string
     // (?lng=&lat=&zoom=) so a headless-render sweep can drive many positions
-    // without editing this file per shot. Defaults match the original Demo A
-    // baseline. A `?source=demotiles` query param switches the style to the
-    // real demotiles.maplibre.org basemap (network permitting) with the
-    // equal-earth projection applied, per step 6's "demotiles attempt" gate.
+    // without editing this file per shot. A `?source=demotiles` query param
+    // switches the style to the real demotiles.maplibre.org basemap
+    // (network permitting) with the equal-earth projection applied, per
+    // step 6's "demotiles attempt" gate.
+    // Default central meridian is -11.5 (owner request 2026-07-22): it puts
+    // the antimeridian seam at 168.5E, splitting the Bering Strait so the
+    // seam crosses the fewest land pieces. Headless gates/sweeps all pass
+    // ?lng= explicitly, so they are unaffected.
     const params = new URLSearchParams(window.location.search);
-    const centerLng = params.has('lng') ? parseFloat(params.get('lng')) : 0;
+    const centerLng = params.has('lng') ? parseFloat(params.get('lng')) : -11.5;
     const centerLat = params.has('lat') ? parseFloat(params.get('lat')) : 0;
     const zoom = params.has('zoom') ? parseFloat(params.get('zoom')) : 1.4;
     const useDemotiles = params.get('source') === 'demotiles';
@@ -164,7 +168,12 @@
     // demo-grade rendering of the clip; the engine stencil pre-pass stays
     // the eventual in-engine/upstream version. As with tissot, the URL
     // param is just the checkbox's initial state.
-    const useClip = params.get('clip') === '1';
+    // Clip is ON by default (owner request 2026-07-22 -- the Jenny look is
+    // the demo's face); `?clip=0` opts out, and the checkbox writes clip=0
+    // when unchecked / removes the param when checked. `?clip=1` still
+    // parses as on for old copied URLs. Headless gates that exercise
+    // unclipped behavior pin clip=0 explicitly.
+    const useClip = params.get('clip') !== '0';
 
     // f32-ladder diagnostic param: `?srcmax=N` caps the GeoJSON sources'
     // maxzoom so tiles overzoom past N. This bounds the covering-tiles
@@ -679,7 +688,9 @@
                 map.jumpTo({center: constrained.center, zoom: constrained.zoom});
             }
             drawClipMask();
-            setUrlParam('clip', on ? '1' : null);
+            // Default is on, so "on" is the no-param state and "off" is the
+            // explicit one -- inverted from the other toggles.
+            setUrlParam('clip', on ? null : '0');
         });
 
         choroplethCheckbox.disabled = useDemotiles || useOverture; // basemap modes take precedence
