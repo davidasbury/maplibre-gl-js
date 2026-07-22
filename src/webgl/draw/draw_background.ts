@@ -31,7 +31,10 @@ export function drawBackground(painter: Painter, tileManager: TileManager, layer
     const pass = (!image && color.a === 1 && opacity === 1 && painter.opaquePassEnabledForLayer()) ? 'opaque' : 'translucent';
     if (painter.renderPass !== pass) return;
 
-    const stencilMode = StencilMode.disabled;
+    // Under the equal-earth seam clip, background must stop at the
+    // projection outline like everything else (it is not tile-clipped, so
+    // the per-tile stencil equality cannot do it).
+    const stencilMode = painter.seamClipActive() ? painter.stencilModeForSeamClip() : StencilMode.disabled;
     const depthMode = painter.getDepthModeForSublayer(0, pass === 'opaque' ? DepthMode.ReadWrite : DepthMode.ReadOnly);
     const colorMode = painter.colorModeForRenderPass();
     const program = painter.useProgram(image ? 'backgroundPattern' : 'background');

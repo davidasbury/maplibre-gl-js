@@ -206,6 +206,13 @@
     // unclipped behavior pin clip=0 explicitly.
     const useClip = params.get('clip') !== '0';
 
+    // `?engineclip=1` (Stage B upstream-cleanup item 1): use the ENGINE's
+    // seam-bit stencil pre-pass for the antimeridian clip instead of the
+    // page's screen-space canvas mask. The canvas mask remains the default
+    // until owner-reviewed parity; this param is the A/B lever the
+    // engine-clip gate drives. Only meaningful while clip mode is on.
+    const useEngineClip = params.get('engineclip') === '1';
+
     // f32-ladder diagnostic param: `?srcmax=N` caps the GeoJSON sources'
     // maxzoom so tiles overzoom past N. This bounds the covering-tiles
     // enumeration (the z>=12 freeze suspect) while the shader still runs at
@@ -756,13 +763,18 @@
             seam.lineTo(p.x, p.y);
         }
         seam.closePath();
-        const mask = new Path2D();
-        mask.rect(-8, -8, w + 16, h + 16);
-        mask.addPath(seam);
-        // Exact void white: matches the page's own void (transparent map
-        // canvas over the white body) and the gates' isVoidRGB threshold.
-        clipCtx.fillStyle = '#ffffff';
-        clipCtx.fill(mask, 'evenodd');
+        if (!useEngineClip) {
+            // Exact void white: matches the page's own void (transparent map
+            // canvas over the white body) and the gates' isVoidRGB threshold.
+            // In engine-clip mode the seam-bit stencil pre-pass produces the
+            // void instead and only the cosmetic outline stroke below is
+            // drawn page-side.
+            const mask = new Path2D();
+            mask.rect(-8, -8, w + 16, h + 16);
+            mask.addPath(seam);
+            clipCtx.fillStyle = '#ffffff';
+            clipCtx.fill(mask, 'evenodd');
+        }
         clipCtx.strokeStyle = '#7a9cb8';
         clipCtx.lineWidth = 1;
         clipCtx.stroke(seam);
@@ -818,7 +830,10 @@
     map.on('style.load', () => {
         if (tissotOn) addTissotOverlay();
         const transform = mapTransform();
-        if (transform) transform.outlineFitZoomFloor = clipOn;
+        if (transform) {
+            transform.outlineFitZoomFloor = clipOn;
+            transform.clipAtProjectionOutline = clipOn && useEngineClip;
+        }
         applyLabelVisibility();
     });
 
@@ -857,6 +872,7 @@
         clipCheckbox.checked = useClip;
         if (useClip) {
             mapTransform().outlineFitZoomFloor = true;
+            if (useEngineClip) mapTransform().clipAtProjectionOutline = true;
             clipOn = true;
             // Land at the outline-fit floor (the Jenny minimum-zoom state)
             // unless the URL pinned an explicit zoom -- the pole-fit floor
@@ -868,6 +884,7 @@
             const on = clipCheckbox.checked;
             const transform = mapTransform();
             transform.outlineFitZoomFloor = on;
+            transform.clipAtProjectionOutline = on && useEngineClip;
             clipOn = on;
             if (on) {
                 // Zoom out to the outline-fit floor so the mode is

@@ -650,6 +650,18 @@ export class EqualEarthTransform implements ITransform {
      */
     outlineFitZoomFloor: boolean = false;
 
+    /**
+     * Engine antimeridian clip (Stage B upstream-cleanup item 1): when
+     * true, the painter's seam-bit stencil pre-pass marks everything
+     * beyond the lambda0 +/- 180 deg seam meridians and vector content is
+     * clipped to the projection outline in-engine (the upstreamable
+     * replacement for the demo page's screen-space canvas mask; see
+     * docs/resources/2026-07-22-stencil-seam-clip-design.md, outer repo).
+     * Runtime-settable like outlineFitZoomFloor; the demo page sets both
+     * together in clip mode when ?engineclip=1.
+     */
+    clipAtProjectionOutline: boolean = false;
+
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {
         const screenHeight = this.size.y;
         let minZoomForFit = this.minZoom;

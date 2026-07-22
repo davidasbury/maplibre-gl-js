@@ -19,7 +19,7 @@ import {CullFaceMode} from '../webgl/cull_face_mode.ts';
 import {Texture} from '../webgl/texture.ts';
 import {Color} from '@maplibre/maplibre-gl-style-spec';
 import {selectDebugSource, webglDrawFunctions, type DrawFunctions} from '../webgl/draw/index.ts';
-import {type OverscaledTileID} from '../tile/tile_id.ts';
+import {OverscaledTileID} from '../tile/tile_id.ts';
 import {Mesh} from './mesh.ts';
 import {MercatorShaderDefine, MercatorShaderVariantKey} from '../geo/projection/mercator_projection.ts';
 
@@ -135,6 +135,14 @@ export class Painter {
     quadTriangleIndexBuffer: IndexBuffer;
     tileBorderIndexBuffer: IndexBuffer;
     _tileClippingMaskIDs: {[_: string]: number};
+    // Seam-clip pre-pass state (engine antimeridian clip, see
+    // docs/resources/2026-07-22-stencil-seam-clip-design.md in the outer
+    // repo): bit 0x80 of the stencil buffer is reserved for "beyond the
+    // projection outline"; these track the per-epoch quad buffer.
+    _seamMaskBuffer: VertexBuffer;
+    _seamMaskIndexBuffer: IndexBuffer;
+    _seamMaskSegments: SegmentVector;
+    _seamMaskDrawnForEpoch: boolean;
     stencilClearMode: StencilMode;
     style: Style;
     options: PainterOptions;
@@ -266,6 +274,8 @@ export class Painter {
         const context = this.context;
         const gl = context.gl;
 
+        this._seamMaskDrawnForEpoch = false;
+
         this.nextStencilID = 1;
         this.currentStencilSource = undefined;
 
@@ -294,6 +304,112 @@ export class Painter {
             this.quadTriangleIndexBuffer, this.viewportSegments);
     }
 
+    /**
+     * Engine antimeridian clip (seam-bit stencil pre-pass): when the
+     * equal-earth transform requests outline clipping, mark every pixel
+     * beyond the lambda0 +/- 180 deg seam meridians with stencil bit 0x80,
+     * once per stencil epoch. In mercator/tile space the seams are the
+     * vertical lines x = lambda0/360 and x = lambda0/360 + 1 (unwrapped),
+     * so the mask is two plain rectangles in z0-tile coordinates; the
+     * Equal Earth vertex shader bends their seam edges onto the exact
+     * curved projection outline. Content draws need no changes at all:
+     * their stencil test (EQUAL, ref = tile ID with bit 7 clear, mask
+     * 0xFF) fails automatically wherever the seam bit is set. 3D and
+     * raster stencil paths are seam-bit-blind (mask 0x7F) - unchanged
+     * behavior, not seam-clipped; recorded limitation.
+     */
+    /**
+     * True when the seam-bit stencil pre-pass is active this frame — i.e.
+     * content that is not tile-clipped (background layers) should apply
+     * `stencilModeForSeamClip()` so it, too, stops at the projection
+     * outline.
+     */
+    seamClipActive(): boolean {
+        const transform = this.transform as typeof this.transform & {clipAtProjectionOutline?: boolean};
+        return this.style.projection?.name === 'equal-earth' && transform.clipAtProjectionOutline === true && !this.renderToTexture;
+    }
+
+    /**
+     * Stencil test for non-tile-clipped content under the seam clip: pass
+     * wherever the seam bit is clear, write nothing. Tile-clipped content
+     * needs no equivalent — its EQUAL/0xFF test fails on seam pixels
+     * automatically.
+     */
+    stencilModeForSeamClip(): Readonly<StencilMode> {
+        const gl = this.context.gl;
+        return new StencilMode({func: gl.EQUAL, mask: 0x80}, 0x00, 0x00, gl.KEEP, gl.KEEP, gl.KEEP);
+    }
+
+    _renderSeamClipMaskIfNeeded(): void {
+        const transform = this.transform as typeof this.transform & {clipAtProjectionOutline?: boolean};
+        if (this.style.projection?.name !== 'equal-earth' || transform.clipAtProjectionOutline !== true) {
+            return;
+        }
+        if (this._seamMaskDrawnForEpoch) {
+            return;
+        }
+        this._seamMaskDrawnForEpoch = true;
+
+        const context = this.context;
+        const gl = context.gl;
+
+        // Seam x in z0-tile coordinates. center.lng IS lambda0; each strip
+        // extends one full world width beyond its seam (rendered world
+        // copies never reach further at outline-fit zooms) and past the
+        // pole lines vertically. The seam-side edge must be SUBDIVIDED:
+        // the vertex shader bends vertices, not edges, and a single
+        // pole-to-pole segment would rasterize as a straight line instead
+        // of the curved outline (that exact failure was this pass's first
+        // draft). 64 vertical samples give ~0.25-degree resolution over
+        // the polar curvature. PosArray is int16: max |coord| here is
+        // 2.5 * EXTENT = 20480 < 32767.
+        const seamWest = Math.round((this.transform.center.lng / 360) * EXTENT);
+        const seamEast = seamWest + EXTENT;
+        const yTop = -EXTENT;
+        const yBottom = 2 * EXTENT;
+        const SEAM_STEPS = 64;
+        const seamArray = new PosArray();
+        for (const [innerX, outerX] of [[seamWest, seamWest - EXTENT], [seamEast, seamEast + EXTENT]]) {
+            for (let i = 0; i <= SEAM_STEPS; i++) {
+                const y = Math.round(yTop + (yBottom - yTop) * i / SEAM_STEPS);
+                seamArray.emplaceBack(innerX, y);
+                seamArray.emplaceBack(outerX, y);
+            }
+        }
+        const vertsPerStrip = (SEAM_STEPS + 1) * 2;
+
+        if (!this._seamMaskBuffer) {
+            this._seamMaskBuffer = context.createVertexBuffer(seamArray, posAttributes.members, true);
+            const seamIndices = new TriangleIndexArray();
+            for (let strip = 0; strip < 2; strip++) {
+                const base = strip * vertsPerStrip;
+                for (let i = 0; i < SEAM_STEPS; i++) {
+                    const row = base + i * 2;
+                    seamIndices.emplaceBack(row, row + 1, row + 2);
+                    seamIndices.emplaceBack(row + 1, row + 3, row + 2);
+                }
+            }
+            this._seamMaskIndexBuffer = context.createIndexBuffer(seamIndices);
+            this._seamMaskSegments = SegmentVector.simpleSegment(0, 0, 2 * vertsPerStrip, 2 * SEAM_STEPS * 2);
+        } else {
+            this._seamMaskBuffer.updateData(seamArray);
+        }
+
+        // z0/wrap0 projection data: the polynomial shader path recovers
+        // unwrapped lng from these tile coords (the lambda0 fold included),
+        // bending the straight seam edges onto the curved outline.
+        const projectionData = this.transform.getProjectionData({overscaledTileID: new OverscaledTileID(0, 0, 0, 0, 0), applyGlobeMatrix: false});
+
+        this.useProgram('clippingMask').draw(context, gl.TRIANGLES,
+            DepthMode.disabled,
+            // Write ONLY bit 7, everywhere the quads cover.
+            new StencilMode({func: gl.ALWAYS, mask: 0}, 0x80, 0x80, gl.KEEP, gl.KEEP, gl.REPLACE),
+            ColorMode.disabled, CullFaceMode.disabled,
+            null, null, projectionData,
+            '$clipping', this._seamMaskBuffer,
+            this._seamMaskIndexBuffer, this._seamMaskSegments);
+    }
+
     renderTileClippingMasks(layer: StyleLayer, tileIDs: OverscaledTileID[], renderToTexture: boolean): void {
         if (this.currentStencilSource === layer.source || !layer.isTileClipped() || !tileIDs?.length) {
             return;
@@ -301,7 +417,11 @@ export class Painter {
 
         this.currentStencilSource = layer.source;
 
-        if (this.nextStencilID + tileIDs.length > 256) {
+        if (!renderToTexture) {
+            this._renderSeamClipMaskIfNeeded();
+        }
+
+        if (this.nextStencilID + tileIDs.length > 128) {
             // we'll run out of fresh IDs so we need to clear and start from scratch
             this.clearStencil();
         }
@@ -347,7 +467,7 @@ export class Painter {
 
             program.draw(context, gl.TRIANGLES, DepthMode.disabled,
                 // Tests will always pass, and ref value will be written to stencil buffer.
-                new StencilMode({func: gl.ALWAYS, mask: 0}, stencilRef, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE),
+                new StencilMode({func: gl.ALWAYS, mask: 0}, stencilRef, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE),
                 ColorMode.disabled, renderToTexture ? CullFaceMode.disabled : CullFaceMode.backCCW, null,
                 terrainData, projectionData, '$clipping', mesh.vertexBuffer,
                 mesh.indexBuffer, mesh.segments);
@@ -390,13 +510,13 @@ export class Painter {
     stencilModeFor3D(): StencilMode {
         this.currentStencilSource = undefined;
 
-        if (this.nextStencilID + 1 > 256) {
+        if (this.nextStencilID + 1 > 128) {
             this.clearStencil();
         }
 
         const id = this.nextStencilID++;
         const gl = this.context.gl;
-        return new StencilMode({func: gl.NOTEQUAL, mask: 0xFF}, id, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
+        return new StencilMode({func: gl.NOTEQUAL, mask: 0x7F}, id, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
     }
 
     stencilModeForClipping(tileID: OverscaledTileID): StencilMode {
@@ -426,12 +546,12 @@ export class Painter {
         const stencilValues = coords[0].overscaledZ - minTileZ + 1;
         if (stencilValues > 1) {
             this.currentStencilSource = undefined;
-            if (this.nextStencilID + stencilValues > 256) {
+            if (this.nextStencilID + stencilValues > 128) {
                 this.clearStencil();
             }
             const zToStencilMode = {};
             for (let i = 0; i < stencilValues; i++) {
-                zToStencilMode[i + minTileZ] = new StencilMode({func: gl.GEQUAL, mask: 0xFF}, i + this.nextStencilID, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilMode[i + minTileZ] = new StencilMode({func: gl.GEQUAL, mask: 0x7F}, i + this.nextStencilID, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
             }
             this.nextStencilID += stencilValues;
             return [zToStencilMode, coords];
@@ -455,8 +575,8 @@ export class Painter {
             const zToStencilModeHigh = {};
             const zToStencilModeLow = {};
             for (let i = 0; i < stencilValues; i++) {
-                zToStencilModeHigh[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, stencilValues + 1 + i, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
-                zToStencilModeLow[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, 1 + i, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilModeHigh[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0x7F}, stencilValues + 1 + i, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilModeLow[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0x7F}, 1 + i, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
             }
             this.nextStencilID = stencilValues * 2 + 1;
             return [
@@ -467,8 +587,8 @@ export class Painter {
         } else {
             this.nextStencilID = 3;
             return [
-                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 2, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE)},
-                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 1, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE)},
+                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0x7F}, 2, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE)},
+                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0x7F}, 1, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE)},
                 coords
             ];
         }
@@ -586,6 +706,10 @@ export class Painter {
         // Clear buffers in preparation for drawing to the main framebuffer
         this.context.clear({color: options.showOverdrawInspector ? Color.black : Color.transparent, depth: 1});
         this.clearStencil();
+        // Seam-bit pre-pass must precede ANY content, including background
+        // layers (they are not tile-clipped and render before the first
+        // tile-mask epoch would lazily trigger it).
+        this._renderSeamClipMaskIfNeeded();
 
         // draw sky first to not overwrite symbols
         if (this.style.sky) this.drawFunctions.sky(this, this.style.sky);
@@ -927,6 +1051,9 @@ export class Painter {
         this.layerOpacityFbo = null;
 
         if (this.tileExtentBuffer) this.tileExtentBuffer.destroy();
+        if (this._seamMaskBuffer) this._seamMaskBuffer.destroy();
+        if (this._seamMaskIndexBuffer) this._seamMaskIndexBuffer.destroy();
+        if (this._seamMaskSegments) this._seamMaskSegments.destroy();
         if (this.debugBuffer) this.debugBuffer.destroy();
         if (this.rasterBoundsBuffer) this.rasterBoundsBuffer.destroy();
         if (this.rasterBoundsBufferPosOnly) this.rasterBoundsBufferPosOnly.destroy();
