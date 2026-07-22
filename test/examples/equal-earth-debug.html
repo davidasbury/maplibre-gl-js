@@ -112,6 +112,14 @@
     // even without real per-country statistics attached to the polygons.
     const useChoropleth = params.get('choropleth') === '1';
 
+    // f32-ladder diagnostic param: `?srcmax=N` caps the GeoJSON sources'
+    // maxzoom so tiles overzoom past N. This bounds the covering-tiles
+    // enumeration (the z>=12 freeze suspect) while the shader still runs at
+    // the display zoom's world scale -- letting the precision ladder measure
+    // f32 error at zooms the naive tile provider can't otherwise reach.
+    const srcMax = params.has('srcmax') ? parseInt(params.get('srcmax'), 10) : null;
+    const srcMaxOpt = srcMax !== null ? {maxzoom: srcMax} : {};
+
     // Shoelace ring area in raw degrees^2 -- a relative ordering metric for
     // bucketing only, not a true geodesic area (fine for a rendering demo).
     function ringArea(ring) {
@@ -292,11 +300,13 @@
             sources: {
                 land: {
                     type: 'geojson',
-                    data: '../bench/data/naturalearth-land.json'
+                    data: '../bench/data/naturalearth-land.json',
+                    ...srcMaxOpt
                 },
                 graticule: {
                     type: 'geojson',
-                    data: graticule
+                    data: graticule,
+                    ...srcMaxOpt
                 }
             },
             layers: [
