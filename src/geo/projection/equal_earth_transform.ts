@@ -41,6 +41,15 @@ import type {CoveringTilesDetailsProvider} from './covering_tiles_details_provid
  */
 type EqualEarthCoordinate = {x: number; y: number; z?: number};
 
+/**
+ * Fraction of the viewport's limiting dimension the projection outline
+ * occupies at the outline-fit zoom floor (see `outlineFitZoomFloor`). <1 so
+ * the floor lands with a visible void margin around the outline rather than
+ * the outline exactly touching the viewport edges — without the margin the
+ * seam sits at the screen edge and the clipped-void region is never visible.
+ */
+const OUTLINE_FIT_MARGIN = 0.94;
+
 export class EqualEarthTransform implements ITransform {
     private _helper: TransformHelper;
 
@@ -582,12 +591,39 @@ export class EqualEarthTransform implements ITransform {
      * pole-y constants as the vertical clamp (not a new hardcoded number),
      * so it can never drift out of sync with them.
      */
+    /**
+     * Antimeridian-clip view mode (step 8 remainder (a), owner round 2):
+     * when true, the zoom floor relaxes from pole-fit to outline-fit — the
+     * user can zoom out until the WHOLE projection outline (east/west seam
+     * meridians included, which are wider than any normal-aspect viewport
+     * at the pole-fit zoom) is visible with void margins, the Jenny-demo
+     * minimum-zoom state. The world x-span is the full unit interval [0,1]
+     * (step-5 normalization), so width-fit needs no x-span constant. Below
+     * the pole-fit zoom the pre-existing lat:=0 branch of defaultConstrain
+     * takes over vertical centering — that branch was built for exactly
+     * this regime and became unreachable only when the pole-fit floor
+     * landed. Default false: floor behavior is bit-identical to before.
+     * Runtime-settable (the debug page toggles it from a checkbox); the
+     * caller re-applies the constraint after flipping it off so an
+     * out-of-floor zoom clamps back up.
+     */
+    outlineFitZoomFloor: boolean = false;
+
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {
         const screenHeight = this.size.y;
         let minZoomForFit = this.minZoom;
         if (screenHeight > 0) {
             const contentHeightUnit = EQUAL_EARTH_WORLD_Y_SOUTH_POLE - EQUAL_EARTH_WORLD_Y_NORTH_POLE;
-            const zFit = Math.log2(screenHeight / (contentHeightUnit * this.tileSize));
+            let zFit = Math.log2(screenHeight / (contentHeightUnit * this.tileSize));
+            const screenWidth = this.size.x;
+            if (this.outlineFitZoomFloor && screenWidth > 0) {
+                // Outline-fit floor: the limiting dimension of the full
+                // outline (unit x-span 1, content y-span above) fits inside
+                // OUTLINE_FIT_MARGIN of the viewport, leaving a visible void
+                // margin around the outline instead of stopping at exact fit.
+                const fitPx = OUTLINE_FIT_MARGIN * Math.min(screenWidth, screenHeight / contentHeightUnit);
+                zFit = Math.log2(fitPx / this.tileSize);
+            }
             minZoomForFit = Math.max(this.minZoom, zFit);
         }
         const constrainedZoom = clamp(+zoom, minZoomForFit, this.maxZoom);

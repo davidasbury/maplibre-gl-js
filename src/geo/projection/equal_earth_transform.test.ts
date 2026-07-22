@@ -363,5 +363,77 @@ describe('EqualEarthTransform', () => {
                 expect(result.zoom).toBe(0);
             });
         });
+
+        describe('outline-fit zoom floor (antimeridian-clip view mode)', () => {
+            // Source-mirrored formula (same OUTLINE_FIT_MARGIN = 0.94): the
+            // zoom at which the outline's limiting dimension occupies 94% of
+            // the viewport. Unit x-span is 1 (step-5 normalization), so
+            // width-fit is just screenWidth px against one world.
+            function computeZOutlineFit(transform: EqualEarthTransform, screenWidth: number, screenHeight: number): number {
+                const contentHeightUnit = EQUAL_EARTH_WORLD_Y_SOUTH_POLE - EQUAL_EARTH_WORLD_Y_NORTH_POLE;
+                const fitPx = 0.94 * Math.min(screenWidth, screenHeight / contentHeightUnit);
+                return Math.log2(fitPx / transform.tileSize);
+            }
+
+            test('flag off (default): floor is bit-identical to pole-fit zFit', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                expect(transform.outlineFitZoomFloor).toBe(false);
+                const result = transform.applyConstrain(new LngLat(0, 0), 0);
+                expect(result.zoom).toBeCloseTo(computeZFit(transform, 700), 10);
+            });
+
+            test('flag on at 1100x700: requesting zoom 0 lands at the outline-fit floor (below pole-fit)', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                transform.outlineFitZoomFloor = true;
+                const zOutline = computeZOutlineFit(transform, 1100, 700);
+                expect(zOutline).toBeLessThan(computeZFit(transform, 700));
+                const result = transform.applyConstrain(new LngLat(0, 0), 0);
+                expect(result.zoom).toBeCloseTo(zOutline, 10);
+            });
+
+            test('flag on below pole-fit: lat hard-locks to the equator (world shorter than viewport)', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                transform.outlineFitZoomFloor = true;
+                const result = transform.applyConstrain(new LngLat(30, 45), 0);
+                expect(result.center.lat).toBe(0);
+                expect(result.center.lng).toBe(30);
+            });
+
+            test('flag on, zoom above pole-fit: constrain unchanged (poles still pin to viewport edges)', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                const zFit = computeZFit(transform, 700);
+                const reference = transform.applyConstrain(new LngLat(10, 80), zFit + 2);
+                transform.outlineFitZoomFloor = true;
+                const withFlag = transform.applyConstrain(new LngLat(10, 80), zFit + 2);
+                expect(withFlag.zoom).toBeCloseTo(reference.zoom, 12);
+                expect(withFlag.center.lat).toBeCloseTo(reference.center.lat, 12);
+            });
+
+            test('flipping the flag off re-clamps an out-of-floor zoom back up to pole-fit', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                transform.resize(1100, 700);
+                transform.outlineFitZoomFloor = true;
+                const below = transform.applyConstrain(new LngLat(0, 0), 0);
+                transform.outlineFitZoomFloor = false;
+                const reClamped = transform.applyConstrain(below.center, below.zoom);
+                expect(reClamped.zoom).toBeCloseTo(computeZFit(transform, 700), 10);
+            });
+
+            test('flag on with zero-size viewport (never resized): no NaN/Infinity, minZoom fallback', () => {
+                const transform = new EqualEarthTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: false});
+                // Deliberately not resized (width and height stay 0): the
+                // width>0 guard must keep the outline-fit branch from
+                // producing NaN/-Infinity, degrading to the same minZoom
+                // fallback the height-0 guard already provides.
+                transform.outlineFitZoomFloor = true;
+                const result = transform.applyConstrain(new LngLat(0, 0), 0);
+                expect(Number.isFinite(result.zoom)).toBe(true);
+                expect(result.zoom).toBe(0);
+            });
+        });
     });
 });
