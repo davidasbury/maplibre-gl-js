@@ -137,8 +137,21 @@ function computeViewportWindow(transform: IReadonlyTransform): GeoWindow {
     // Always > 0 including at +-90 (Equal Earth's poles are lines, not
     // points -- see `equalEarthXScaleAtLat`'s own doc comment), so this
     // division is always safe.
+    //
+    // The cap is +-540 (1.5 worlds each side, matching the +-3 wraps the
+    // shared traversal can seed), NOT +-180: at floor zooms on a wide
+    // viewport the visible span at polar rows legitimately exceeds 360
+    // degrees -- the seam meridians curve inward toward the poles, so the
+    // neighbor world copies are visible past BOTH seams at once. The
+    // original +-180 cap culled exactly those wrap tiles, leaving void
+    // wedges at the left/right viewport edges for most center longitudes
+    // (lng 0/90 escaped by coincidence -- the needed wrap tile's edge
+    // touched the capped window boundary exactly, which is why the G1
+    // gates missed it; found via owner repro at lng~146, 2026-07-22).
+    // High-zoom tile counts are unaffected: the span shrinks with
+    // worldSize long before any freeze-risk zoom.
     const minScale = Math.min(equalEarthXScaleAtLat(latMin), equalEarthXScaleAtLat(latMax));
-    const lngHalfSpan = Math.min(180, xHalfUnit / minScale);
+    const lngHalfSpan = Math.min(540, xHalfUnit / minScale);
 
     return {
         latMin,

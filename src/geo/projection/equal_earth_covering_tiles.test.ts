@@ -208,6 +208,32 @@ describe('EqualEarthCoveringTilesDetailsProvider (analytic window v2, via coveri
             }
         });
 
+        test('floor zoom on a wide viewport, center lng 146.28: far-east wrap tile (effective lng >= 360) present -- void-wedge regression', () => {
+            // At the pole-fit floor on a wide viewport the visible span at
+            // polar rows exceeds 360 degrees (seams curve inward), so the
+            // east wedge needs tiles whose effective longitude
+            // (-180 + 360*x/2^z + 360*wrap) reaches past 360. The old
+            // +-180 window cap culled exactly those (owner repro
+            // 2026-07-22: void wedges at the viewport edges at lng~146;
+            // lng 0/90 escaped by edge-touching coincidence, which is why
+            // G1 never caught it).
+            const transform = createTransform(1440, 760, true);
+            transform.setZoom(1.6087);
+            transform.setCenter(new LngLat(146.28, 0));
+            const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 22});
+            const effectiveLngLo = (t: OverscaledTileID) => -180 + 360 * (t.canonical.x / (1 << t.canonical.z)) + 360 * t.wrap;
+            expect(tiles.some((t) => effectiveLngLo(t) >= 360)).toBe(true);
+        });
+
+        test('mirror: center lng -146.28 requests a far-west wrap tile (effective lng < -360)', () => {
+            const transform = createTransform(1440, 760, true);
+            transform.setZoom(1.6087);
+            transform.setCenter(new LngLat(-146.28, 0));
+            const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 22});
+            const effectiveLngHi = (t: OverscaledTileID) => -180 + 360 * ((t.canonical.x + 1) / (1 << t.canonical.z)) + 360 * t.wrap;
+            expect(tiles.some((t) => effectiveLngHi(t) <= -360)).toBe(true);
+        });
+
         test('wrap exactness: center lng 0 requests wrap 0 only', () => {
             const transform = createTransform(1024, 768, true);
             transform.setZoom(4);
