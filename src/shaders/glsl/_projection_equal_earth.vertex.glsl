@@ -6,6 +6,24 @@
 // PI and u_projection_matrix come from _prelude.vertex.glsl.
 
 uniform highp vec4 u_projection_tile_mercator_coords;
+// Per-tile linearized path (f32 round 2, 2026-07-22): above the transform's
+// linearization threshold the CPU sends a per-tile tile-units -> clip matrix
+// (f64-composed, f32-cast -- the mercator posMatrix trick) in
+// u_projection_matrix plus two small clip-space quadratic-correction vectors,
+// and signals the mode by u_projection_tile_mercator_coords.zw == 0 (a real
+// tile always has a positive mercator span; the tile-less placeholder is
+// [0,0,1,1]). Rationale: the polynomial path stores absolute unit-world EE
+// coordinates (~0.5) in f32, whose ulp is ~2^-24 of the world -- 8 screen px
+// at z18 -- so any sub-ulp geometry (line extrusions, small buildings)
+// collapses; weaker shader ALUs (Haswell) lose further bits in the
+// transcendentals and degrade from ~z13.5. Tile-local coordinates are
+// f32-exact, so the linear path has neither failure mode. Linearizing EE per
+// tile is near-exact: x is exactly linear in lambda (pseudocylindrical), and
+// the residual after the quadratic terms is third-order in the tile span
+// (CPU-side eligibility keeps it below 0.05 px). Pole-row tiles are excluded
+// CPU-side, so the pole sentinel branch below never meets this path.
+uniform highp vec4 u_projection_ee_quad_uv;
+uniform highp vec4 u_projection_ee_quad_vv;
 
 // const float rather than #define: the shader minifier in
 // build/generate-shaders.ts merges newlines after ")" into the next line,
@@ -73,11 +91,31 @@ vec2 projectToEqualEarth(vec2 posInTile, vec2 rawPos) {
     return vec2(x / EE_WORLD_EXTENT + 0.5, 0.5 - y / EE_WORLD_EXTENT);
 }
 
+// The high-zoom linearized path: u_projection_matrix is the per-tile
+// tile-units -> clip matrix; the two quadratic terms restore the (tiny)
+// curvature the affine part drops. All per-vertex values here are either
+// tile-local (f32-exact) or pixel-scale (no cancellation).
+vec4 projectTileLinearized(vec2 p, float elevation) {
+    vec4 pos = u_projection_matrix * vec4(p.x, p.y, elevation, 1.0);
+    return pos + u_projection_ee_quad_uv * (p.x * p.y) + u_projection_ee_quad_vv * (p.y * p.y);
+}
+
+bool eeLinearizedMode() {
+    return u_projection_tile_mercator_coords.z == 0.0;
+}
+
 // Projects a point in tile-local coordinates (usually 0..EXTENT) to screen,
 // and handles special pole vertices (rendered, not killed -- see above).
 // projectToEqualEarth already returns unit-square y-down world coordinates,
-// which is exactly what u_projection_matrix (the equalEarthMatrix) consumes.
+// which is exactly what u_projection_matrix (the equalEarthMatrix) consumes
+// in the polynomial mode; in linearized mode u_projection_matrix is the
+// per-tile matrix instead and the polynomial never runs.
 vec4 projectTile(vec2 p, vec2 rawPos) {
+    if (eeLinearizedMode()) {
+        // Linearized tiles are never pole-row tiles (CPU-side eligibility),
+        // so rawPos sentinels cannot occur here.
+        return projectTileLinearized(p, 0.0);
+    }
     vec2 ee = projectToEqualEarth(p, rawPos);
     return u_projection_matrix * vec4(ee.x, ee.y, 0.0, 1.0);
 }
@@ -92,6 +130,9 @@ vec4 projectTileWithElevation(vec2 posInTile, float elevation) {
     // Like mercator: only used in symbol vertex shaders and symbols never use
     // pole vertices, so no sentinel detection. Elevation passes through as z
     // (unused in Demo A).
+    if (eeLinearizedMode()) {
+        return projectTileLinearized(posInTile, elevation);
+    }
     vec2 ee = projectToEqualEarth(posInTile, vec2(0.0, 0.0));
     return u_projection_matrix * vec4(ee.x, ee.y, elevation, 1.0);
 }

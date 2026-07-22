@@ -10,6 +10,8 @@ export type ProjectionPreludeUniformsType = {
     'u_projection_clipping_plane': Uniform4f;
     'u_projection_transition': Uniform1f;
     'u_projection_fallback_matrix': UniformMatrix4f;
+    'u_projection_ee_quad_uv': Uniform4f;
+    'u_projection_ee_quad_vv': Uniform4f;
 };
 
 export const projectionUniforms = (context: Context, locations: UniformLocations): ProjectionPreludeUniformsType => ({
@@ -18,6 +20,8 @@ export const projectionUniforms = (context: Context, locations: UniformLocations
     'u_projection_clipping_plane': new Uniform4f(context, locations.u_projection_clipping_plane),
     'u_projection_transition': new Uniform1f(context, locations.u_projection_transition),
     'u_projection_fallback_matrix': new UniformMatrix4f(context, locations.u_projection_fallback_matrix),
+    'u_projection_ee_quad_uv': new Uniform4f(context, locations.u_projection_ee_quad_uv),
+    'u_projection_ee_quad_vv': new Uniform4f(context, locations.u_projection_ee_quad_vv),
 });
 
 /**
@@ -29,4 +33,6 @@ export const projectionObjectToUniformMap: {[field in keyof ProjectionData]: key
     clippingPlane: 'u_projection_clipping_plane',
     projectionTransition: 'u_projection_transition',
     fallbackMatrix: 'u_projection_fallback_matrix',
+    equalEarthQuadUV: 'u_projection_ee_quad_uv',
+    equalEarthQuadVV: 'u_projection_ee_quad_vv',
 };

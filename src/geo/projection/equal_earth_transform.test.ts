@@ -514,4 +514,87 @@ describe('EqualEarthTransform', () => {
             expect(viaTile.x).toBeGreaterThan(transform.width / 2);
         });
     });
+
+    describe('linearized high-zoom render path (f32 round 2)', () => {
+        // The per-tile linearized projection data must be the sub-0.05px
+        // twin of the exact f64 projection (projectTileCoordinates) across
+        // the whole tile — that budget is what makes the shader's f32
+        // matrix path safe to substitute for the polynomial at high zoom.
+
+        function tileContaining(lng: number, lat: number, canonicalZ: number, overscaledZ: number): OverscaledTileID {
+            const scale = 1 << canonicalZ;
+            const tileX = Math.min(Math.floor(mercatorXfromLng(lng) * scale), scale - 1);
+            const tileY = Math.min(Math.floor(mercatorYfromLat(lat) * scale), scale - 1);
+            return new OverscaledTileID(overscaledZ, 0, canonicalZ, tileX, tileY);
+        }
+
+        // Shader twin: clip = M·(p, 0, 1) + quadUV·(px·py) + quadVV·(py²).
+        function evalLinearized(data: {mainMatrix: ArrayLike<number>; equalEarthQuadUV?: number[]; equalEarthQuadVV?: number[]}, px: number, py: number): {x: number; y: number; w: number} {
+            const m = data.mainMatrix;
+            const out = [0, 0, 0, 0];
+            for (let row = 0; row < 4; row++) {
+                out[row] = m[row] * px + m[4 + row] * py + m[12 + row] +
+                    data.equalEarthQuadUV[row] * px * py +
+                    data.equalEarthQuadVV[row] * py * py;
+            }
+            return {x: out[0] / out[3], y: out[1] / out[3], w: out[3]};
+        }
+
+        test.each([
+            {canonicalZ: 14, zoom: 14, lng: 30, lat: 50},
+            {canonicalZ: 14, zoom: 18, lng: 30, lat: 50},
+            {canonicalZ: 13, zoom: 16, lng: -122.26, lat: 37.79},
+            {canonicalZ: 15, zoom: 20, lng: 170.1, lat: -45.3},
+            {canonicalZ: 18, zoom: 22, lng: 30, lat: 50},
+        ])('agrees with the exact projection within 0.05 px (canonical z$canonicalZ at display z$zoom)', ({canonicalZ, zoom, lng, lat}) => {
+            const transform = createTransform(zoom, new LngLat(lng, lat));
+            const tileID = tileContaining(lng, lat, canonicalZ, Math.max(canonicalZ, Math.floor(zoom)));
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            // Linearized mode must actually be active for these combos.
+            expect(data.tileMercatorCoords[2]).toBe(0);
+            const unwrapped = tileID.toUnwrapped();
+            let maxErrorPx = 0;
+            for (let px = 0; px <= EXTENT; px += EXTENT / 8) {
+                for (let py = 0; py <= EXTENT; py += EXTENT / 8) {
+                    const exact = transform.projectTileCoordinates(px, py, unwrapped, null);
+                    const approx = evalLinearized(data, px, py);
+                    const dx = (approx.x - exact.point.x) / 2 * transform.width;
+                    const dy = (approx.y - exact.point.y) / 2 * transform.height;
+                    maxErrorPx = Math.max(maxErrorPx, Math.hypot(dx, dy));
+                }
+            }
+            expect(maxErrorPx).toBeLessThan(0.05);
+        });
+
+        test('low zoom stays on the polynomial path', () => {
+            const transform = createTransform(8, new LngLat(30, 50));
+            const tileID = tileContaining(30, 50, 8, 8);
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            expect(data.tileMercatorCoords[2]).toBeGreaterThan(0);
+        });
+
+        test('pole-row tiles stay on the polynomial path (sentinel vertices)', () => {
+            const transform = createTransform(16, new LngLat(30, 85));
+            const canonicalZ = 14;
+            const tileID = new OverscaledTileID(16, 0, canonicalZ, Math.floor(mercatorXfromLng(30) * (1 << canonicalZ)), 0);
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            expect(data.tileMercatorCoords[2]).toBeGreaterThan(0);
+        });
+
+        test('extreme overzoom over the residual budget falls back to the polynomial path', () => {
+            const transform = createTransform(18, new LngLat(30, 50));
+            // canonical z8 tile displayed at z18: span³·worldSize far over budget
+            const tileID = tileContaining(30, 50, 8, 18);
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            expect(data.tileMercatorCoords[2]).toBeGreaterThan(0);
+        });
+
+        test('polynomial-mode data carries explicit zero quad corrections', () => {
+            const transform = createTransform(3, new LngLat(0, 0));
+            const tileID = tileContaining(0, 0, 3, 3);
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            expect(data.equalEarthQuadUV).toEqual([0, 0, 0, 0]);
+            expect(data.equalEarthQuadVV).toEqual([0, 0, 0, 0]);
+        });
+    });
 });

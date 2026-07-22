@@ -50,6 +50,32 @@ type EqualEarthCoordinate = {x: number; y: number; z?: number};
  */
 const OUTLINE_FIT_MARGIN = 0.94;
 
+/**
+ * f32 round 2 (2026-07-22): gates for the per-tile linearized render path.
+ *
+ * The polynomial shader path stores absolute unit-world EE coordinates
+ * (~0.5) in f32; their ulp is ~2^-24 of the world — 8 screen px at z18 —
+ * so sub-ulp geometry (line extrusions, small buildings) collapses, and
+ * weaker shader ALUs (Haswell) degrade from ~z13.5. Above
+ * `EE_LINEARIZED_MIN_OVERSCALED_Z` eligible tiles switch to a per-tile
+ * tile-units→clip matrix composed in f64 (the mercator posMatrix trick;
+ * EE is exactly linear in λ, quadratic-corrected in φ), with a residual
+ * that is third-order in the tile's mercator span. Eligibility requires the
+ * residual estimate `span³ · worldSize` (curvature constants are O(1)) to
+ * stay under `EE_LINEARIZED_MAX_RESIDUAL_PX` — extreme many-level overzoom
+ * of a low-canonical tile falls back to the polynomial path — and excludes
+ * pole-row tiles, whose subdivision pole-sentinel vertices only the
+ * polynomial path understands.
+ */
+const EE_LINEARIZED_MIN_OVERSCALED_Z = 13;
+const EE_LINEARIZED_MAX_RESIDUAL_PX = 0.05;
+
+type EqualEarthLinearizedTileData = {
+    matrix: Mat4f32;
+    quadUV: [number, number, number, number];
+    quadVV: [number, number, number, number];
+};
+
 export class EqualEarthTransform implements ITransform {
     private _helper: TransformHelper;
 
@@ -271,6 +297,10 @@ export class EqualEarthTransform implements ITransform {
     private _posMatrixCache: Map<string, {f64: Mat4f64; f32: Mat4f32}> = new Map();
     private _alignedPosMatrixCache: Map<string, {f64: Mat4f64; f32: Mat4f32}> = new Map();
     private _fogMatrixCacheF32: Map<string, mat4> = new Map();
+    // Per-tile linearized render data (f32 round 2). Depends on center.lng
+    // (λ0 fold) and the frame matrices, so it lives with the other matrix
+    // caches and is cleared by _clearMatrixCaches on every _calcMatrices.
+    private _linearizedTileDataCache: Map<string, EqualEarthLinearizedTileData> = new Map();
 
     private _coveringTilesDetailsProvider;
 
@@ -825,6 +855,96 @@ export class EqualEarthTransform implements ITransform {
         this._posMatrixCache.clear();
         this._alignedPosMatrixCache.clear();
         this._fogMatrixCacheF32.clear();
+        this._linearizedTileDataCache.clear();
+    }
+
+    /**
+     * f32 round 2: per-tile linearized render data for the high-zoom path,
+     * or null when the tile must use the polynomial path (low zoom, pole-row
+     * tile, or a residual estimate over budget — see the constants' doc).
+     *
+     * Everything here is computed in f64 from the exact EE forward function
+     * at five sample points on the tile's (λ0-folded) mercator footprint:
+     * the tile-units→clip matrix composes the exact-in-λ / quadratic-in-φ
+     * affine part with the f64 whole-world equalEarthMatrix (the classic
+     * mercator posMatrix precision structure), and the two clip-space vec4s
+     * carry the remaining quadratic terms (`p.x·p.y` and `p.y²` in tile
+     * units) that the shader adds back — small values, so f32-safe.
+     * Must stay the exact CPU twin of `projectTileLinearized` in
+     * `_projection_equal_earth.vertex.glsl`.
+     */
+    private _getLinearizedTileData(overscaledTileID: OverscaledTileID): EqualEarthLinearizedTileData | null {
+        if (overscaledTileID.overscaledZ < EE_LINEARIZED_MIN_OVERSCALED_Z) return null;
+        const canonical = overscaledTileID.canonical;
+        // Pole-row tiles carry subdivision pole-sentinel vertices only the
+        // polynomial path understands.
+        if (canonical.y === 0 || canonical.y === (1 << canonical.z) - 1) return null;
+        const span = 1 / (1 << canonical.z);
+        // Third-order residual estimate; unit-world curvature constants are
+        // O(1) (pinned by the unit tests' measured-residual bound).
+        if (span * span * span * this.worldSize > EE_LINEARIZED_MAX_RESIDUAL_PX) return null;
+
+        const cacheKey = String(overscaledTileID.key ?? calculateTileKey(overscaledTileID.wrap, overscaledTileID.overscaledZ, canonical.z, canonical.x, canonical.y));
+        const cached = this._linearizedTileDataCache.get(cacheKey);
+        if (cached) return cached;
+
+        // λ0-folded mercator origin, identical to the polynomial path's
+        // tileMercatorCoords fold (wrap + live central meridian).
+        const x0 = canonical.x * span + overscaledTileID.wrap - this.center.lng / 360;
+        const y0 = canonical.y * span;
+        const eeAt = (mx: number, my: number) => equalEarthWorldFromLngLat(mx * 360 - 180, latFromMercatorY(my), 0);
+        const a = eeAt(x0, y0);
+        const b = eeAt(x0 + span, y0);
+        const c = eeAt(x0, y0 + span);
+        const d = eeAt(x0 + span, y0 + span);
+        const e = eeAt(x0, y0 + span / 2);
+
+        // EE x is exactly linear in mercator x at fixed y, so this slope is
+        // exact, not an approximation.
+        const dxDu = (b.x - a.x) / span;
+        // Quadratic interpolation through v = 0, span/2, span (both axes):
+        // f(v) = f0 + lin·v + quad·v²; residual is third-order.
+        const quadX = 2 * (a.x - 2 * e.x + c.x) / (span * span);
+        const linX = (4 * e.x - 3 * a.x - c.x) / span;
+        const quadY = 2 * (a.y - 2 * e.y + c.y) / (span * span);
+        const linY = (4 * e.y - 3 * a.y - c.y) / span;
+        // Bilinear mixed term (k(φ) changes across the tile's y span).
+        const mixedUV = (d.x - c.x - b.x + a.x) / (span * span);
+
+        // Tile units → mercator span factor (== tileMercatorCoords.zw).
+        const f = span / EXTENT;
+        // Affine part: tile units (x, y, elevation, 1) → unit EE with
+        // elevation passing straight through as z, matching the polynomial
+        // path's projectTileWithElevation semantics.
+        const affine = createMat4f64();
+        affine[0] = dxDu * f;
+        affine[4] = linX * f;
+        affine[5] = linY * f;
+        affine[10] = 1;
+        affine[12] = a.x;
+        affine[13] = a.y;
+        affine[15] = 1;
+        const tileMatrix = mat4.multiply(createMat4f64(), this._equalEarthMatrix, affine);
+
+        // Clip-space quadratic corrections: whole-world-matrix columns × the
+        // per-tile-unit² coefficients. Small by construction (pixel-scale
+        // contributions), so the f32 uniforms lose nothing that matters.
+        const m = this._equalEarthMatrix;
+        const uvScale = mixedUV * f * f;
+        const vvXScale = quadX * f * f;
+        const vvYScale = quadY * f * f;
+        const data: EqualEarthLinearizedTileData = {
+            matrix: new Float32Array(tileMatrix),
+            quadUV: [m[0] * uvScale, m[1] * uvScale, m[2] * uvScale, m[3] * uvScale],
+            quadVV: [
+                m[0] * vvXScale + m[4] * vvYScale,
+                m[1] * vvXScale + m[5] * vvYScale,
+                m[2] * vvXScale + m[6] * vvYScale,
+                m[3] * vvXScale + m[7] * vvYScale,
+            ],
+        };
+        this._linearizedTileDataCache.set(cacheKey, data);
+        return data;
     }
 
     maxPitchScaleFactor(): number {
@@ -899,6 +1019,22 @@ export class EqualEarthTransform implements ITransform {
         } else {
             fallbackMatrix = createIdentityMat4f32();
         }
+        // f32 round 2: eligible high-zoom tiles switch to the per-tile
+        // linearized path. The shader detects it by tileMercatorCoords.zw
+        // == 0 — impossible for a real tile (positive mercator span) and
+        // distinct from the tile-less placeholder [0,0,1,1].
+        const linearized = overscaledTileID ? this._getLinearizedTileData(overscaledTileID) : null;
+        if (linearized) {
+            return {
+                mainMatrix: linearized.matrix,
+                tileMercatorCoords: [0, 0, 0, 0],
+                clippingPlane: [0, 0, 0, 0],
+                projectionTransition: applyGlobeMatrix ? 1 : 0,
+                fallbackMatrix,
+                equalEarthQuadUV: linearized.quadUV,
+                equalEarthQuadVV: linearized.quadVV,
+            };
+        }
         return {
             mainMatrix: this._equalEarthMatrix32f,
             tileMercatorCoords: mercatorTileCoordinates,
@@ -910,6 +1046,10 @@ export class EqualEarthTransform implements ITransform {
             // this only drives the TS-side sky/atmosphere blends.
             projectionTransition: applyGlobeMatrix ? 1 : 0,
             fallbackMatrix,
+            // Explicit zeros: the shader ignores these in polynomial mode,
+            // but deterministic uniform state beats stale values.
+            equalEarthQuadUV: [0, 0, 0, 0],
+            equalEarthQuadVV: [0, 0, 0, 0],
         };
     }
 

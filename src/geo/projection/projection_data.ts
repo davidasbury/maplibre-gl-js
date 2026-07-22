@@ -60,6 +60,22 @@ export type ProjectionData<MainMatrix extends mat4 = mat4, FallbackMatrix extend
      * Uniform name: `u_projection_fallback_matrix`.
      */
     fallbackMatrix: FallbackMatrix;
+    /**
+     * Equal Earth high-zoom linearized path only (see the equal-earth shader
+     * chunk): clip-space quadratic-correction coefficient for the
+     * `p.x * p.y` tile-unit monomial. Optional — transforms that never use
+     * the linearized path simply omit both fields (the uniform applier only
+     * sets fields present on the object), the same pattern as globe's own
+     * projection-specific fields.
+     * Uniform name: `u_projection_ee_quad_uv`.
+     */
+    equalEarthQuadUV?: [number, number, number, number];
+    /**
+     * Equal Earth linearized path: clip-space quadratic-correction
+     * coefficient for the `p.y * p.y` tile-unit monomial.
+     * Uniform name: `u_projection_ee_quad_vv`.
+     */
+    equalEarthQuadVV?: [number, number, number, number];
 };
 
 /**
