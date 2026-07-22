@@ -2586,3 +2586,112 @@ describe('TileManager / etag', () => {
         expect(tile.etag).toBe(tileEtag);
     });
 });
+
+describe('TileManager errored-tile retry with cooldown', () => {
+    // Fix option 2 from the 2026-07-22 errored-tile-holes diagnosis: a tile
+    // whose fetch failed non-abort/non-404 used to sit 'errored' forever
+    // (counted loaded, rendered as a hole, repaired only by a zoom-level
+    // change). update() now re-requests it via _addTile once the
+    // exponential cooldown elapses, up to a hard attempt cap; 404s never
+    // retry.
+
+    function setupErroringManager(failImpl: (tile: Tile) => Promise<void>) {
+        const transform = new MercatorTransform();
+        transform.resize(511, 511);
+        transform.setZoom(0);
+        const tileManager = createTileManager();
+        tileManager._source.loadTile = failImpl;
+        tileManager.on('data', (e) => {
+            if (e.dataType === 'source' && e.sourceDataType === 'metadata') {
+                tileManager.update(transform);
+            }
+        });
+        return {tileManager, transform};
+    }
+
+    async function waitFor(predicate: () => boolean) {
+        for (let i = 0; i < 200 && !predicate(); i++) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(predicate()).toBe(true);
+    }
+
+    test('errored tile is re-requested after the cooldown and repairs on a clean network', async () => {
+        let fail = true;
+        let loadCalls = 0;
+        const {tileManager, transform} = setupErroringManager(async (tile) => {
+            loadCalls++;
+            if (fail) throw new Error('network flake');
+            tile.state = 'loaded';
+        });
+        const errorPromise = tileManager.once('error');
+        tileManager.onAdd(undefined);
+        await errorPromise;
+        const tile = tileManager._inViewTiles.getAllTiles()[0];
+        await waitFor(() => tile.state === 'errored');
+        expect(tile.erroredAt).toBeGreaterThan(0);
+        const callsAfterFailure = loadCalls;
+
+        // Inside the cooldown window: movement must NOT re-request.
+        tileManager.update(transform);
+        expect(loadCalls).toBe(callsAfterFailure);
+        expect(tile.state).toBe('errored');
+
+        // Past the cooldown, network healthy: movement retries and repairs.
+        fail = false;
+        tile.erroredAt = Date.now() - 60_000;
+        tileManager.update(transform);
+        await waitFor(() => tile.state === 'loaded');
+        expect(loadCalls).toBe(callsAfterFailure + 1);
+        expect(tile.errorRetryCount).toBe(1);
+    });
+
+    test('retries stop at the attempt cap', async () => {
+        let loadCalls = 0;
+        const {tileManager, transform} = setupErroringManager(async () => {
+            loadCalls++;
+            throw new Error('still down');
+        });
+        const errorPromise = tileManager.once('error');
+        tileManager.onAdd(undefined);
+        await errorPromise;
+        const tile = tileManager._inViewTiles.getAllTiles()[0];
+        await waitFor(() => tile.state === 'errored');
+
+        // Exhaust the three attempts (cooldown bypassed by backdating).
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            const callsBefore = loadCalls;
+            tile.erroredAt = Date.now() - 60_000;
+            tileManager.update(transform);
+            await waitFor(() => loadCalls === callsBefore + 1 && tile.state === 'errored');
+            expect(tile.errorRetryCount).toBe(attempt);
+        }
+
+        // Cap reached: further movement never re-requests.
+        const callsAtCap = loadCalls;
+        tile.erroredAt = Date.now() - 60_000;
+        tileManager.update(transform);
+        expect(loadCalls).toBe(callsAtCap);
+        expect(tile.state).toBe('errored');
+    });
+
+    test('404s are never retried', async () => {
+        let loadCalls = 0;
+        const {tileManager, transform} = setupErroringManager(async () => {
+            loadCalls++;
+            const err: any = new Error('Not found');
+            err.status = 404;
+            throw err;
+        });
+        tileManager.on('error', () => { throw new Error('test failed: error event fired for a 404'); });
+        tileManager.onAdd(undefined);
+        const tile = await (async () => {
+            await waitFor(() => tileManager._inViewTiles.getAllTiles().some((t) => t.state === 'errored'));
+            return tileManager._inViewTiles.getAllTiles().find((t) => t.state === 'errored');
+        })();
+        expect(tile.erroredAt).toBe(0);
+        const callsAfter404 = loadCalls;
+        tileManager.update(transform);
+        expect(loadCalls).toBe(callsAfter404);
+    });
+});

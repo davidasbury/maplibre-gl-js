@@ -55,6 +55,14 @@ type TileResult = {
  *  - unloading cached tiles not needed to render a given viewport
  *  - managing tile state and feature state
  */
+/**
+ * Errored-tile retry gates (see TileManager._retryErroredTileIfDue):
+ * per-tile attempt cap and the base of the exponential cooldown
+ * (1s, 2s, 4s between successive attempts).
+ */
+const TILE_ERROR_MAX_RETRIES = 3;
+const TILE_ERROR_RETRY_BASE_COOLDOWN_MS = 1000;
+
 export class TileManager extends Evented {
     id: string;
     dispatcher: Dispatcher;
@@ -193,6 +201,11 @@ export class TileManager extends Evented {
             tile.state = 'errored';
 
             if (err.status !== 404) {
+                // Non-404 failures are transient-capable (network flake,
+                // server hiccup) and eligible for the movement-driven retry
+                // in _retryErroredTileIfDue; 404s leave erroredAt at 0 and
+                // are never re-requested.
+                tile.erroredAt = Date.now();
                 this._source.fire(new ErrorEvent(ensureError(err), {tile}));
             } else {
                 // continue to try loading parent/children tiles if a tile doesn't exist (404)
@@ -686,10 +699,40 @@ export class TileManager extends Evented {
     /**
      * Add a tile, given its coordinate, to the pyramid.
      */
+    /**
+     * Errored-tile retry with cooldown (2026-07-22; fix option 2 from the
+     * errored-tile-holes diagnosis). Previously a tile whose fetch failed
+     * non-abort/non-404 sat in state 'errored' forever: counted as loaded
+     * by loaded(), rendered as a permanent hole, never re-requested by pan
+     * or time — only a zoom-level change (fresh tile objects) repaired it.
+     * update() funnels every ideal tile through _addTile on movement, so
+     * re-requesting here retries errored tiles as the user pans, with
+     * exponential cooldown (1s/2s/4s) and a hard attempt cap so a dead
+     * network cannot be hammered. The retry sets state 'expired' — NOT
+     * 'loading': loadTile() parks a 'loading' tile on a reloadPromise that
+     * only an actually-in-flight load would resolve (there is none after a
+     * failure — a retried tile would hang forever), while 'expired' takes
+     * the fresh-actor full-fetch branch, which is exactly what a data-less
+     * errored tile needs. 'expired' also keeps loaded()/idle honest (spins
+     * during the attempt). 404s never retry (erroredAt stays 0 — see
+     * Tile.erroredAt).
+     */
+    _retryErroredTileIfDue(tile: Tile, tileID: OverscaledTileID): void {
+        if (tile.state !== 'errored' || tile.erroredAt === 0) return;
+        if (tile.errorRetryCount >= TILE_ERROR_MAX_RETRIES) return;
+        const cooldownMs = TILE_ERROR_RETRY_BASE_COOLDOWN_MS * (1 << tile.errorRetryCount);
+        if (Date.now() - tile.erroredAt < cooldownMs) return;
+        tile.errorRetryCount++;
+        tile.state = 'expired';
+        this._loadTile(tile, tileID.key, tile.state);
+    }
+
     _addTile(tileID: OverscaledTileID): Tile {
         let tile = this._inViewTiles.getTileById(tileID.key);
-        if (tile)
+        if (tile) {
+            this._retryErroredTileIfDue(tile, tileID);
             return tile;
+        }
 
         tile = this._outOfViewCache.getAndRemove(tileID);
         if (tile) {

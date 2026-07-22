@@ -83,6 +83,15 @@ export class Tile {
     etag?: string;
     expirationTime: any;
     expiredRequestCount: number;
+    /**
+     * Wall-clock ms of the last non-404 load failure, 0 when none. Set by
+     * TileManager._loadTile; drives the errored-tile retry-with-cooldown
+     * (TileManager._retryErroredTileIfDue). 404s deliberately leave this 0
+     * (legitimately missing tiles must never be re-requested).
+     */
+    erroredAt: number;
+    /** Number of errored-tile retry attempts consumed (see erroredAt). */
+    errorRetryCount: number;
     state: TileState;
     fadingRole: FadingRoles;
     fadingDirection: FadingDirections;
@@ -156,6 +165,8 @@ export class Tile {
         // so we don't have to keep retrying immediately in case of a server
         // serving expired tiles.
         this.expiredRequestCount = 0;
+        this.erroredAt = 0;
+        this.errorRetryCount = 0;
 
         this.state = 'loading';
         this.featureStateRevision = -1;
