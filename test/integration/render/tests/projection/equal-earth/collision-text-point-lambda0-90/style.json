@@ -1,0 +1,164 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "description": "Step-9 regression: collision keyed off the live central meridian (center.lng=90); three label columns (lng 60/90/120) all visible and carrying aligned boxes; a placement bug that froze lambda0 at 0 would shift every column.",
+      "collisionDebug": true,
+      "height": 256,
+      "width": 256
+    }
+  },
+  "center": [
+    90,
+    0
+  ],
+  "zoom": 1,
+  "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
+  "projection": {
+    "type": "equal-earth"
+  },
+  "sources": {
+    "geojson": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "MultiPoint",
+          "coordinates": [
+            [
+              60,
+              -80
+            ],
+            [
+              60,
+              -60
+            ],
+            [
+              60,
+              -40
+            ],
+            [
+              60,
+              -20
+            ],
+            [
+              60,
+              0
+            ],
+            [
+              60,
+              20
+            ],
+            [
+              60,
+              40
+            ],
+            [
+              60,
+              60
+            ],
+            [
+              60,
+              80
+            ],
+            [
+              90,
+              -80
+            ],
+            [
+              90,
+              -60
+            ],
+            [
+              90,
+              -40
+            ],
+            [
+              90,
+              -20
+            ],
+            [
+              90,
+              0
+            ],
+            [
+              90,
+              20
+            ],
+            [
+              90,
+              40
+            ],
+            [
+              90,
+              60
+            ],
+            [
+              90,
+              80
+            ],
+            [
+              120,
+              -80
+            ],
+            [
+              120,
+              -60
+            ],
+            [
+              120,
+              -40
+            ],
+            [
+              120,
+              -20
+            ],
+            [
+              120,
+              0
+            ],
+            [
+              120,
+              20
+            ],
+            [
+              120,
+              40
+            ],
+            [
+              120,
+              60
+            ],
+            [
+              120,
+              80
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "text",
+      "type": "symbol",
+      "source": "geojson",
+      "layout": {
+        "text-field": "TEST",
+        "text-font": [
+          "Open Sans Semibold",
+          "Arial Unicode MS Bold"
+        ],
+        "text-size": 14
+      }
+    }
+  ]
+}

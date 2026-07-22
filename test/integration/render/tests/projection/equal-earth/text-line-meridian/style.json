@@ -1,0 +1,393 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "description": "Line-following labels on bowing meridians: glyph baselines rotate with the projected curve (step-7 defect, fixed by step 9)."
+    }
+  },
+  "center": [
+    0,
+    0
+  ],
+  "zoom": 1.2,
+  "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
+  "projection": {
+    "type": "equal-earth"
+  },
+  "sources": {
+    "vector_tiles": {
+      "type": "vector",
+      "maxzoom": 0,
+      "tiles": [
+        "local://tiles/{z}-{x}-{y}.mvt"
+      ]
+    },
+    "meridians": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [
+                  -60,
+                  -90
+                ],
+                [
+                  -60,
+                  -85
+                ],
+                [
+                  -60,
+                  -80
+                ],
+                [
+                  -60,
+                  -75
+                ],
+                [
+                  -60,
+                  -70
+                ],
+                [
+                  -60,
+                  -65
+                ],
+                [
+                  -60,
+                  -60
+                ],
+                [
+                  -60,
+                  -55
+                ],
+                [
+                  -60,
+                  -50
+                ],
+                [
+                  -60,
+                  -45
+                ],
+                [
+                  -60,
+                  -40
+                ],
+                [
+                  -60,
+                  -35
+                ],
+                [
+                  -60,
+                  -30
+                ],
+                [
+                  -60,
+                  -25
+                ],
+                [
+                  -60,
+                  -20
+                ],
+                [
+                  -60,
+                  -15
+                ],
+                [
+                  -60,
+                  -10
+                ],
+                [
+                  -60,
+                  -5
+                ],
+                [
+                  -60,
+                  0
+                ],
+                [
+                  -60,
+                  5
+                ],
+                [
+                  -60,
+                  10
+                ],
+                [
+                  -60,
+                  15
+                ],
+                [
+                  -60,
+                  20
+                ],
+                [
+                  -60,
+                  25
+                ],
+                [
+                  -60,
+                  30
+                ],
+                [
+                  -60,
+                  35
+                ],
+                [
+                  -60,
+                  40
+                ],
+                [
+                  -60,
+                  45
+                ],
+                [
+                  -60,
+                  50
+                ],
+                [
+                  -60,
+                  55
+                ],
+                [
+                  -60,
+                  60
+                ],
+                [
+                  -60,
+                  65
+                ],
+                [
+                  -60,
+                  70
+                ],
+                [
+                  -60,
+                  75
+                ],
+                [
+                  -60,
+                  80
+                ],
+                [
+                  -60,
+                  85
+                ],
+                [
+                  -60,
+                  90
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [
+                  60,
+                  -90
+                ],
+                [
+                  60,
+                  -85
+                ],
+                [
+                  60,
+                  -80
+                ],
+                [
+                  60,
+                  -75
+                ],
+                [
+                  60,
+                  -70
+                ],
+                [
+                  60,
+                  -65
+                ],
+                [
+                  60,
+                  -60
+                ],
+                [
+                  60,
+                  -55
+                ],
+                [
+                  60,
+                  -50
+                ],
+                [
+                  60,
+                  -45
+                ],
+                [
+                  60,
+                  -40
+                ],
+                [
+                  60,
+                  -35
+                ],
+                [
+                  60,
+                  -30
+                ],
+                [
+                  60,
+                  -25
+                ],
+                [
+                  60,
+                  -20
+                ],
+                [
+                  60,
+                  -15
+                ],
+                [
+                  60,
+                  -10
+                ],
+                [
+                  60,
+                  -5
+                ],
+                [
+                  60,
+                  0
+                ],
+                [
+                  60,
+                  5
+                ],
+                [
+                  60,
+                  10
+                ],
+                [
+                  60,
+                  15
+                ],
+                [
+                  60,
+                  20
+                ],
+                [
+                  60,
+                  25
+                ],
+                [
+                  60,
+                  30
+                ],
+                [
+                  60,
+                  35
+                ],
+                [
+                  60,
+                  40
+                ],
+                [
+                  60,
+                  45
+                ],
+                [
+                  60,
+                  50
+                ],
+                [
+                  60,
+                  55
+                ],
+                [
+                  60,
+                  60
+                ],
+                [
+                  60,
+                  65
+                ],
+                [
+                  60,
+                  70
+                ],
+                [
+                  60,
+                  75
+                ],
+                [
+                  60,
+                  80
+                ],
+                [
+                  60,
+                  85
+                ],
+                [
+                  60,
+                  90
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "vector_tiles",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "#cccccc"
+      }
+    },
+    {
+      "id": "meridian-line",
+      "type": "line",
+      "source": "meridians",
+      "paint": {
+        "line-color": "#88aacc",
+        "line-width": 1
+      }
+    },
+    {
+      "id": "meridian-text",
+      "type": "symbol",
+      "source": "meridians",
+      "layout": {
+        "symbol-placement": "line",
+        "symbol-spacing": 120,
+        "text-field": "MERIDIAN",
+        "text-font": [
+          "Open Sans Semibold",
+          "Arial Unicode MS Bold"
+        ],
+        "text-size": 14
+      },
+      "paint": {
+        "text-color": "#003366"
+      }
+    }
+  ]
+}

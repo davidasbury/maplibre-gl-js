@@ -1,0 +1,43 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "description": "View centered near the antimeridian: wrapped world copies render seamlessly on both sides (pseudocylindrical banana tiling)."
+    }
+  },
+  "center": [
+    170,
+    0
+  ],
+  "zoom": 1.2,
+  "projection": {
+    "type": "equal-earth"
+  },
+  "sources": {
+    "vector_tiles": {
+      "type": "vector",
+      "maxzoom": 0,
+      "tiles": [
+        "local://tiles/{z}-{x}-{y}.mvt"
+      ]
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "vector_tiles",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "blue"
+      }
+    }
+  ]
+}

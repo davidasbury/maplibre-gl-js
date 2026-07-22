@@ -1,0 +1,88 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "description": "Step-9 regression: point-label collision boxes coincide with their rendered labels under Equal Earth.",
+      "collisionDebug": true,
+      "height": 256,
+      "width": 256
+    }
+  },
+  "zoom": 1,
+  "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
+  "projection": {
+    "type": "equal-earth"
+  },
+  "sources": {
+    "geojson": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "MultiPoint",
+          "coordinates": [
+            [
+              0,
+              -80
+            ],
+            [
+              0,
+              -60
+            ],
+            [
+              0,
+              -40
+            ],
+            [
+              0,
+              -20
+            ],
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              20
+            ],
+            [
+              0,
+              40
+            ],
+            [
+              0,
+              60
+            ],
+            [
+              0,
+              80
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "text",
+      "type": "symbol",
+      "source": "geojson",
+      "layout": {
+        "text-field": "TEST",
+        "text-font": [
+          "Open Sans Semibold",
+          "Arial Unicode MS Bold"
+        ],
+        "text-size": 14
+      }
+    }
+  ]
+}
