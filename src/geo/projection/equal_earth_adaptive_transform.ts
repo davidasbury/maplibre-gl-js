@@ -2,8 +2,10 @@ import type {mat2, mat4, vec3, vec4} from 'gl-matrix';
 import {TransformHelper} from '../transform_helper.ts';
 import {MercatorTransform} from './mercator_transform.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
-import {type LngLat, type LngLatLike} from '../lng_lat.ts';
-import {lerp} from '../../util/util.ts';
+import {LngLat, type LngLatLike} from '../lng_lat.ts';
+import {clamp, lerp, zoomScale} from '../../util/util.ts';
+import {mercatorYfromLat} from '../mercator_coordinate.ts';
+import {equalEarthWorldFromLngLat, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
 import type {OverscaledTileID, UnwrappedTileID, CanonicalTileID} from '../../tile/tile_id.ts';
 
 import type Point from '@mapbox/point-geometry';
@@ -423,8 +425,77 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         return this.currentTransform.getBounds();
     }
 
+    /**
+     * Blended rendered world-y of a latitude: exactly the shader's
+     * positional mix applied to the vertical axis (mercator unit-world y,
+     * clamped to [0,1] beyond ±85.05°, mixed toward Equal Earth unit-world
+     * y by eeness). Monotonically decreasing in latitude at every eeness.
+     */
+    private _blendedWorldY(lat: number): number {
+        const mercY = clamp(mercatorYfromLat(lat), 0, 1);
+        if (this._eeness >= 1) return equalEarthWorldFromLngLat(0, lat).y;
+        if (this._eeness <= 0) return mercY;
+        return lerp(mercY, equalEarthWorldFromLngLat(0, lat).y, this._eeness);
+    }
+
+    private _latFromBlendedWorldY(y: number): number {
+        // Bisection over the monotonic _blendedWorldY (y-down: lat 90 is
+        // the smallest y). 50 iterations ≈ 1e-13 degrees.
+        let lo = -90, hi = 90;
+        for (let i = 0; i < 50; i++) {
+            const mid = (lo + hi) / 2;
+            if (this._blendedWorldY(mid) > y) lo = mid; else hi = mid;
+        }
+        return (lo + hi) / 2;
+    }
+
+    /**
+     * Blend-aware constrain (owner design, ghost/pole-clamp round,
+     * 2026-07-23): the vertical clamp and the pole-fit zoom floor must
+     * track the RENDERED world, not the dominant endpoint's geometry.
+     * Delegating to the EE child's constrain mid-blend held the EE pole
+     * docked at the viewport edge while the rendered high latitudes had
+     * stretched most of the way to their mercator positions — an entire
+     * high-latitude band (Svalbard, in the owner's repro) became
+     * unreachable at 0<t<1, recovering only at t=0. This constrain uses
+     * the blended world-y everywhere, so the content edge that docks at
+     * the viewport top slides continuously from the Equal Earth pole line
+     * (t=1) to mercator's ±85.05° cut-off (t=0). It also computes from
+     * this transform's OWN size, which fixes a second bug the delegation
+     * had: on the very first constrain (during construction) the child
+     * transforms were not yet sized, their zoom floor silently no-opped,
+     * and a below-floor URL zoom stuck with voids top and bottom.
+     */
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {
-        return this.currentTransform.defaultConstrain(lngLat, zoom);
+        const screenHeight = this.size.y;
+        // Blended content extent: lat ±90 renders at mix(mercator-edge 0/1,
+        // EE pole line) — i.e. the pole lines slide outward toward the
+        // mercator world edges as eeness falls.
+        const yTop = this._eeness * EQUAL_EARTH_WORLD_Y_NORTH_POLE;
+        const yBottom = 1 - this._eeness * (1 - EQUAL_EARTH_WORLD_Y_SOUTH_POLE);
+        const contentHeightUnit = yBottom - yTop;
+        let minZoomForFit = this.minZoom;
+        if (screenHeight > 0) {
+            minZoomForFit = Math.max(this.minZoom, Math.log2(screenHeight / (contentHeightUnit * this.tileSize)));
+        }
+        const constrainedZoom = clamp(+zoom, minZoomForFit, this.maxZoom);
+        let constrainedLat = clamp(lngLat.lat, -90, 90);
+
+        const worldSize = this.tileSize * zoomScale(constrainedZoom);
+        const minCenterY = yTop * worldSize + screenHeight / 2;
+        const maxCenterY = yBottom * worldSize - screenHeight / 2;
+        if (minCenterY > maxCenterY) {
+            constrainedLat = 0;
+        } else {
+            const centerY = this._blendedWorldY(constrainedLat) * worldSize;
+            const clampedCenterY = clamp(centerY, minCenterY, maxCenterY);
+            constrainedLat = this._latFromBlendedWorldY(clampedCenterY / worldSize);
+        }
+
+        return {
+            center: new LngLat(lngLat.lng, constrainedLat),
+            zoom: constrainedZoom
+        };
     };
 
     applyConstrain: TransformConstrainFunction = (lngLat, zoom) => {

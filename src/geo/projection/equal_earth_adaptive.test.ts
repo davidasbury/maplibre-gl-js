@@ -138,3 +138,62 @@ describe('projection factory routing', () => {
         expect(projection).not.toBeInstanceOf(EqualEarthAdaptiveProjection);
     });
 });
+
+describe('blend-aware constrain (owner pole-clamp design, 2026-07-23)', () => {
+    function createTransform(eeness: number, zoom: number, lat: number): EqualEarthAdaptiveTransform {
+        const transform = new EqualEarthAdaptiveTransform();
+        transform.setTransitionState(eeness, 0);
+        transform.resize(1100, 700);
+        transform.setZoom(zoom);
+        transform.setCenter(new LngLat(16, lat));
+        return transform;
+    }
+
+    test('t=1: zoom floor matches static Equal Earth pole-fit (no below-floor voids)', () => {
+        const transform = createTransform(1, 1.4, 0);
+        // EE pole-fit floor for a 700px viewport is ~1.49 — 1.4 must clamp up.
+        expect(transform.zoom).toBeGreaterThan(1.45);
+    });
+
+    test('t=0: zoom floor relaxes to the full mercator world height', () => {
+        const transform = createTransform(0, 1.4, 0);
+        // mercator content height is the full unit world: floor ≈ log2(700/512) ≈ 0.45.
+        expect(transform.zoom).toBeCloseTo(1.4, 5);
+    });
+
+    test('mid-blend: high latitudes stay reachable (the Svalbard case)', () => {
+        // Pre-fix, t=0.75 at z4.5 clamped a lat-75 request to ~65.2 —
+        // Svalbard (74–81N) was unreachable mid-blend.
+        const transform = createTransform(0.75, 4.5, 75);
+        expect(transform.center.lat).toBeGreaterThan(74);
+    });
+
+    test('clamp endpoints: t=1 docks the EE pole, t=0 docks the mercator cut-off', () => {
+        const ee = createTransform(1, 4.5, 90);
+        const merc = createTransform(0, 4.5, 90);
+        // Both clamp below 90; the mercator-side clamp must respect the
+        // ±85.05 world edge (nothing beyond it exists to dock).
+        expect(ee.center.lat).toBeLessThan(90);
+        expect(merc.center.lat).toBeLessThanOrEqual(85.06);
+        // The reachable ceiling should not DECREASE as eeness falls at
+        // fixed zoom (the pre-fix behavior): mid-blend must lie between.
+        const mid = createTransform(0.5, 4.5, 90);
+        expect(mid.center.lat).toBeGreaterThanOrEqual(Math.min(ee.center.lat, merc.center.lat) - 0.01);
+    });
+
+    test('clamp ceiling rises monotonically and continuously as eeness falls', () => {
+        // Measured curve at z4.5 (1100x700): 65.16 (t=1, pure-EE pole dock)
+        // rising smoothly to 84.02 (t=0, mercator cut-off dock). Steepest
+        // near t=1 (~5 deg per 0.05 step — smooth, not a pop); monotonic
+        // throughout. Guard both properties.
+        let prev = null;
+        for (let t = 1; t >= -1e-9; t -= 0.05) {
+            const lat = createTransform(+t.toFixed(2), 4.5, 90).center.lat;
+            if (prev !== null) {
+                expect(lat).toBeGreaterThanOrEqual(prev - 1e-9); // monotonic
+                expect(lat - prev).toBeLessThan(6); // continuous (no jump)
+            }
+            prev = lat;
+        }
+    });
+});
