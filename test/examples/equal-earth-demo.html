@@ -142,8 +142,7 @@
     <div class="diag-toggle diag-sub" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
     <div class="diag-toggle diag-sub" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
     <div class="diag-toggle" title="Global Mapterhorn terrarium DEM driving a hillshade layer, blended over the demotiles watercolor PMTiles archive (Innsbruck region &mdash; the CORS-open mirror of the Cooper Hewitt watercolor tiles). Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain</label></div>
-    <div class="diag-toggle" title="Equal-area hexagonal bins: a uniform hex grid in the Equal Earth plane is EXACTLY equal-area on the globe (no H3 wobble, no pentagons). Cells shaded by land fraction; size adapts to zoom; grid glides with the central meridian."><label for="diag-hexbins"><input type="checkbox" id="diag-hexbins" disabled /> hexbins</label></div>
-    <div class="diag-toggle diag-sub"><label for="diag-hex-pointy" title="Pointy-top hex orientation (default flat-top). Plane-grid modes only."><input type="checkbox" id="diag-hex-pointy" disabled /> pointy</label> <label for="diag-hex-h3" title="Uber H3 cells instead of the EE-plane grid: earth-fixed and seam-proof at every latitude (the plane grid cannot be — see the 2026-07-23 findings doc), ~2% area wobble within a resolution, 12 pentagons."><input type="checkbox" id="diag-hex-h3" disabled /> h3</label></div>
+    <div class="diag-toggle" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><label for="diag-hexbins"><input type="checkbox" id="diag-hexbins" disabled /> hexbins</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
 <script src="./h3-js-4.3.0.umd.js"></script>
@@ -214,21 +213,19 @@
     // origin — the demotiles archive is its usable regional mirror.
     const useTerrain = params.get('source') === 'terrain';
 
-    // ---- Equal-area hexbin basemap (owner request, 2026-07-23) ----------
-    // The trick that makes this projection-native: a uniform hex grid in
-    // the EE projected plane is EXACTLY equal-area on the globe (that is
-    // the definition of an equal-area projection) — no H3 cell-area wobble
-    // or pentagons, no geohash aspect chaos. And because a central-meridian
-    // change is a pure translation in EE x, the grid glides with the world
-    // under drag. Cells are shaded by land fraction, sampled against an
-    // offscreen rasterization of the Natural Earth land polygons in the
-    // same EE plane. Zoom-adaptive: cell size halves every 2 zoom levels,
-    // with generation limited to the viewport (+margin) beyond z3.
-    // `?hexstyle=pointy` switches hex orientation (default flat-top);
-    // `?hexstyle=h3` switches to Uber H3 cells (earth-fixed, seam-proof).
+    // ---- Hexagonal-bin basemap (owner request, 2026-07-23) --------------
+    // Uber H3 cells, earth-fixed and seam-proof. The first cut was a
+    // uniform hex grid in the EE projected plane (exactly equal-area by
+    // the projection's defining property), but a plane-fixed grid
+    // provably cannot tile the ±180 seam at every latitude — world
+    // copies displace by 2·halfWidth(φ) while any plane grid has one
+    // fixed period (2026-07-23 findings doc) — so the owner removed it
+    // in favor of H3 (~2% area wobble, 12 pentagons, but honest
+    // everywhere). Cells are shaded by land fraction: Overture water
+    // polygons at coastline resolution where tiles are loaded, a Natural
+    // Earth EE-plane raster elsewhere. Resolution adapts to zoom;
+    // generation is limited to the viewport (+margin) beyond z3.
     const useHexbins = params.get('source') === 'hexbins';
-    let hexPointy = params.get('hexstyle') === 'pointy';
-    let hexH3 = params.get('hexstyle') === 'h3';
 
     // Minimal EE forward/inverse for page-side grid math — mirrors
     // src/geo/equal_earth_coordinate.ts (values must match; the engine
@@ -311,66 +308,6 @@
         return landSampler;
     }
 
-    // Hex grid over an EE-plane bbox, SEAM-PERIODIC: R is quantized so the
-    // world width (1 unit) is an exact number of horizontal grid periods —
-    // flat-top period 3R (two columns), pointy-top period sqrt(3)R — so
-    // the tiling matches itself across the ±180 seam exactly
-    // (owner-reported misalignment with the unquantized first cut). Cells
-    // are keyed by canonical (column mod world, row) to dedupe overhang
-    // copies; ring geometry keeps the local unwrapped position so
-    // seam-straddling cells render into the adjacent world copy.
-    function quantizedHexR(targetR, pointy) {
-        const period = pointy ? Math.sqrt(3) * targetR : 3 * targetR;
-        const n = Math.max(1, Math.round(1 / period));
-        return pointy ? 1 / (Math.sqrt(3) * n) : 1 / (3 * n);
-    }
-
-    function hexCenters(R, x0, x1, y0, y1, pointy) {
-        const centers = [];
-        const seen = new Set();
-        const a = 1.5 * R, b = Math.sqrt(3) * R;
-        const push = (x, y, colKey, rowKey) => {
-            const key = colKey + ':' + rowKey;
-            if (seen.has(key)) return;
-            seen.add(key);
-            centers.push([x, y, key]);
-        };
-        if (!pointy) {
-            const worldCols = Math.round(1 / a); // integer by quantization (2n columns)
-            for (let col = Math.floor(x0 / a) - 1; col * a <= x1 + a; col++) {
-                const x = col * a;
-                const yOff = (col & 1) ? b / 2 : 0;
-                const canonicalCol = ((col % worldCols) + worldCols) % worldCols;
-                for (let y = Math.floor((y0 - yOff) / b) * b + yOff; y <= y1 + b; y += b) {
-                    push(x, y, canonicalCol, Math.round((y - yOff) / b) + ((col & 1) ? '.5' : ''));
-                }
-            }
-        } else {
-            const worldCols = Math.round(1 / b);
-            for (let row = Math.floor(y0 / a) - 1; row * a <= y1 + a; row++) {
-                const y = row * a;
-                const xOff = (row & 1) ? b / 2 : 0;
-                for (let x = Math.floor((x0 - xOff) / b) * b + xOff; x <= x1 + b; x += b) {
-                    const col = Math.round((x - xOff) / b);
-                    const canonicalCol = ((col % worldCols) + worldCols) % worldCols;
-                    push(x, y, canonicalCol + ((row & 1) ? '.5' : ''), row);
-                }
-            }
-        }
-        return centers;
-    }
-
-    function hexRingLngLat(cx, cy, R, pointy) {
-        const ring = [];
-        for (let i = 0; i < 6; i++) {
-            const ang = (Math.PI / 3) * i + (pointy ? Math.PI / 6 : 0);
-            const p = EE.inverse(cx + R * Math.cos(ang), cy + R * Math.sin(ang));
-            ring.push([p.lng, p.lat]);
-        }
-        ring.push(ring[0]);
-        return ring;
-    }
-
     // Seam-straddling cells must NOT be emitted with unwrapped longitudes:
     // vertices beyond ±180 get renormalized somewhere in the GeoJSON
     // pipeline and the rings mangle into the owner-reported column of
@@ -397,29 +334,16 @@
         return {type: 'MultiPolygon', coordinates: pieces};
     }
 
-    let hexLastGen = null; // {bucket, pointy, x0, x1, y0, y1} — regen hysteresis
+    let hexLastGen = null; // {bucket, x0, x1, y0, y1, ovTried, ov} — regen hysteresis + overture-sampler state
 
-    // Land-fraction sampling shared by both generation paths below.
-    function hexLandFraction(sampler, cx, cy, R) {
-        let hits = 0, n = 0;
-        for (let i = 0; i < 13; i++) {
-            const ang = (Math.PI / 6) * i;
-            const rr = i === 0 ? 0 : (i <= 6 ? 0.45 * R : 0.8 * R);
-            hits += sampler(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang));
-            n++;
-        }
-        return +(hits / n).toFixed(2);
-    }
-
-    // H3 mode (owner request, 2026-07-23): earth-fixed hexagonal cells
-    // from Uber's H3 grid (vendored h3-js UMD, window.h3). Trades the
-    // EE-plane grid's exact equal-area for cell identity that survives
-    // any central meridian and the antimeridian: the plane grid provably
-    // cannot be seam-consistent at every latitude (world copies displace
-    // by 2·halfWidth(φ) while the grid period is fixed — the 2026-07-23
-    // findings doc), while H3 cells never shear and render identically
-    // on both sides of ±180. Area wobble ~2% within a resolution,
-    // 12 pentagons per resolution.
+    // The hexbin basemap: earth-fixed hexagonal cells from Uber's H3
+    // grid (vendored h3-js UMD, window.h3). H3 is THE hexbin mode: the
+    // EE-plane uniform grid it replaced provably cannot be
+    // seam-consistent at every latitude (world copies displace by
+    // 2·halfWidth(φ) while any plane grid has one fixed period — the
+    // 2026-07-23 findings doc; owner removed it 2026-07-23), while H3
+    // cells never shear and render identically on both sides of ±180.
+    // Area wobble ~2% within a resolution, 12 pentagons per resolution.
     const H3_EDGE_KM = [1107.7, 418.7, 158.2, 59.8, 22.6, 8.54, 3.23, 1.22, 0.46];
     function h3ResForZoom(fz) {
         // Match the plane-grid apparent-size schedule (cells ~40-80 px,
@@ -450,13 +374,108 @@
         ]]};
     }
 
-    async function buildH3Features() {
-        const sampler = await getLandSampler();
+    // Overture-informed land sampling (owner enhancement, 2026-07-23
+    // round 2): the Natural Earth raster is 2048px across the whole
+    // world (~0.18°/px) — far coarser than H3 cells beyond ~z6. When the
+    // hexbin style's hidden Overture water layer has tiles loaded,
+    // rasterize the queried water polygons into a viewport-scoped canvas
+    // in the same EE plane and sample that instead, falling back to the
+    // Natural Earth raster outside the trusted (tiles-actually-loaded)
+    // region. Returns null when no water features are queryable yet —
+    // the caller then retries once on the next map idle.
+    function buildOvertureWaterSampler(vx0, vx1, vy0, vy1) {
+        if (!map || !map.getStyle() || !map.getSource('overture-base')) return null;
+        let feats;
+        try {
+            feats = map.querySourceFeatures('overture-base', {sourceLayer: 'water'});
+        } catch (e) {
+            return null;
+        }
+        if (!feats.length) return null;
+        const W = 1400;
+        const H = Math.max(64, Math.min(4096, Math.round(W * (vy1 - vy0) / (vx1 - vx0))));
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        const ctx = canvas.getContext('2d', {willReadFrequently: true});
+        ctx.fillStyle = '#fff';
+        const drawPoly = (rings, off) => {
+            ctx.beginPath();
+            for (const ring of rings) {
+                ring.forEach(([lng, lat], i) => {
+                    const p = EE.forward(lng, lat);
+                    const px = (p.x + off - vx0) / (vx1 - vx0) * W;
+                    const py = (p.y - vy0) / (vy1 - vy0) * H;
+                    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+                });
+                ctx.closePath();
+            }
+            ctx.fill('evenodd');
+        };
+        for (const f of feats) {
+            const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] :
+                f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [];
+            // The generation frame is unwrapped around the view center;
+            // queried geometry is canonical — draw at every world-copy
+            // offset that lands inside the raster.
+            for (const rings of polys) {
+                for (const off of [-1, 0, 1]) {
+                    const x = EE.forward(rings[0][0][0], rings[0][0][1]).x + off;
+                    if (x > vx0 - 0.25 && x < vx1 + 0.25) drawPoly(rings, off);
+                }
+            }
+        }
+        const data = ctx.getImageData(0, 0, W, H).data;
+        return (x, y) => {
+            for (const off of [-1, 0, 1]) {
+                const xx = x + off;
+                if (xx < vx0 || xx > vx1 || y < vy0 || y > vy1) continue;
+                const px = Math.max(0, Math.min(W - 1, Math.round((xx - vx0) / (vx1 - vx0) * W)));
+                const py = Math.max(0, Math.min(H - 1, Math.round((y - vy0) / (vy1 - vy0) * H)));
+                return data[((py * W + px) << 2) + 3] > 127 ? 0 : 1; // water painted -> not land
+            }
+            return -1; // outside trusted region
+        };
+    }
+
+    // The outline layer must not trace the artificial ±180 clip edges of
+    // seam-split cells — that doubled edge was the owner-reported white
+    // north-south line at the antimeridian. Cells therefore emit the six
+    // REAL hexagon edges as a separate MultiLineString feature (each
+    // edge split at ±180 into canonical pieces), and the line layer
+    // filters to LineStrings.
+    function h3EdgeLines(ring) {
+        const lines = [];
+        for (let i = 0; i < ring.length - 1; i++) {
+            const a = ring[i], b = ring[i + 1];
+            if (a[0] === b[0] && a[1] === b[1]) continue;
+            const lo = Math.min(a[0], b[0]), hi = Math.max(a[0], b[0]);
+            if (hi <= 180 && lo >= -180) { lines.push([a, b]); continue; }
+            const bound = hi > 180 ? 180 : -180;
+            const shift = hi > 180 ? -360 : 360;
+            if (lo >= 180 || hi <= -180) {
+                lines.push([[a[0] + shift, a[1]], [b[0] + shift, b[1]]]);
+                continue;
+            }
+            const t = (bound - a[0]) / (b[0] - a[0]);
+            const latX = a[1] + t * (b[1] - a[1]);
+            for (const seg of [[a, [bound, latX]], [[bound, latX], b]]) {
+                if (seg[0][0] === seg[1][0] && seg[0][1] === seg[1][1]) continue;
+                const free = seg[0][0] === bound ? seg[1] : seg[0];
+                const beyond = bound === 180 ? free[0] > 180 : free[0] < -180;
+                lines.push(beyond ? seg.map(([lng, lat]) => [lng + shift, lat]) : seg);
+            }
+        }
+        return {type: 'MultiLineString', coordinates: lines};
+    }
+
+    async function buildHexbinFeatures() {
+        const neSampler = await getLandSampler();
         const zoom = map ? map.getZoom() : 1.4;
         const fz = Math.floor(zoom);
         const res = h3ResForZoom(fz);
         let cells;
         let x0 = 0, x1 = 1, y0 = EE.yNorth, y1 = EE.ySouth;
+        let ovSampler = null;
         if (map && zoom > 3) {
             const corners = [[0, 0], [map.getContainer().clientWidth, 0], [0, map.getContainer().clientHeight], [map.getContainer().clientWidth, map.getContainer().clientHeight]];
             const lng0 = map.getCenter().lng;
@@ -468,10 +487,11 @@
                 return EE.forward(lng, ll.lat);
             });
             const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-            const mx = 0.3 * (Math.max(...xs) - Math.min(...xs));
-            const my = 0.3 * (Math.max(...ys) - Math.min(...ys));
-            x0 = Math.min(...xs) - mx; x1 = Math.max(...xs) + mx;
-            y0 = Math.max(EE.yNorth, Math.min(...ys) - my); y1 = Math.min(EE.ySouth, Math.max(...ys) + my);
+            const vx0 = Math.min(...xs), vx1 = Math.max(...xs);
+            const vy0 = Math.min(...ys), vy1 = Math.max(...ys);
+            const mx = 0.3 * (vx1 - vx0), my = 0.3 * (vy1 - vy0);
+            x0 = vx0 - mx; x1 = vx1 + mx;
+            y0 = Math.max(EE.yNorth, vy0 - my); y1 = Math.min(EE.ySouth, vy1 + my);
             // Cover the viewport with a grid disk around the center
             // cell: coverage is computed in H3's own grid space, so the
             // seam and the poles need no special casing at all.
@@ -480,11 +500,22 @@
             const diagKm = Math.hypot(x1 - x0, y1 - y0) * 40075;
             const k = Math.min(40, Math.ceil((diagKm * 0.55) / (1.5 * H3_EDGE_KM[res])) + 2);
             cells = window.h3.gridDisk(centerCell, k);
+            // High-res coastlines where available: the trusted region is
+            // the viewport proper (no margin) — covering tiles are only
+            // guaranteed loaded there.
+            ovSampler = buildOvertureWaterSampler(vx0, vx1, vy0, vy1);
         } else {
             cells = window.h3.getRes0Cells();
             if (res > 0) cells = cells.flatMap((cell) => window.h3.cellToChildren(cell, res));
         }
-        hexLastGen = {bucket: fz, pointy: hexPointy, h3: true, x0, x1, y0, y1, seam: null};
+        hexLastGen = {bucket: fz, x0, x1, y0, y1, ov: !!ovSampler, ovTried: false};
+        const sampleLand = (x, y) => {
+            if (ovSampler) {
+                const v = ovSampler(x, y);
+                if (v >= 0) return v;
+            }
+            return neSampler(x, y);
+        };
         const features = [];
         for (const cell of cells) {
             const [clat, clng] = window.h3.cellToLatLng(cell);
@@ -503,146 +534,26 @@
                 ring.push(ring[0]);
             }
             // Land fraction: center + boundary vertices pulled 30%
-            // inward, sampled in the (wrapping) EE-plane land raster.
-            let hits = sampler(ctr.x, ctr.y), n = 1;
+            // inward, sampled through the overture raster where trusted
+            // and the (wrapping) Natural Earth EE-plane raster elsewhere.
+            let hits = sampleLand(ctr.x, ctr.y), n = 1;
             for (let i = 0; i < ring.length - 1; i++) {
                 const p = EE.forward(ring[i][0], ring[i][1]);
-                hits += sampler(ctr.x + 0.7 * (p.x - ctr.x), ctr.y + 0.7 * (p.y - ctr.y));
+                hits += sampleLand(ctr.x + 0.7 * (p.x - ctr.x), ctr.y + 0.7 * (p.y - ctr.y));
                 n++;
             }
             const lngs = ring.map(([lng]) => lng);
             const poleCell = Math.max(...lngs) - Math.min(...lngs) > 270;
+            const land = +(hits / n).toFixed(2);
             features.push({
                 type: 'Feature',
-                properties: {land: +(hits / n).toFixed(2), cell},
+                properties: {land, cell},
                 geometry: poleCell ? h3PoleGeometry(ring, clat > 0) : hexGeometry(ring)
             });
-        }
-        return {type: 'FeatureCollection', features};
-    }
-
-    async function buildHexbinFeatures() {
-        if (hexH3) return buildH3Features();
-        const sampler = await getLandSampler();
-        const zoom = map ? map.getZoom() : 1.4;
-        // Cell size halves every zoom level (~41-82px apparent band),
-        // quantized so the grid tiles the world seam-exactly.
-        const R = quantizedHexR(0.04 / Math.pow(2, Math.floor(zoom)), hexPointy);
-        // Beyond z3, generate only for the visible EE bbox (+margin). The
-        // frame is ABSOLUTE (cells are fixed to the earth): the first cut
-        // subtracted lambda0 from corner longitudes and would have built
-        // cells around Greenwich regardless of where the view was.
-        let x0 = 0, x1 = 1, y0 = EE.yNorth, y1 = EE.ySouth;
-        let seamWindows = null, seamBounds = null;
-        if (map && zoom > 3) {
-            const corners = [[0, 0], [map.getContainer().clientWidth, 0], [0, map.getContainer().clientHeight], [map.getContainer().clientWidth, map.getContainer().clientHeight]];
-            const lng0 = map.getCenter().lng;
-            const lls = corners.map(([px, py]) => {
-                const ll = map.unproject([px, py]);
-                // unwrap around the view center so the bbox is continuous
-                let lng = ll.lng;
-                while (lng - lng0 > 180) lng -= 360;
-                while (lng - lng0 < -180) lng += 360;
-                return {lng, lat: ll.lat};
-            });
-            const pts = lls.map(({lng, lat}) => EE.forward(lng, lat));
-            const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-            const mx = Math.max(3 * R, 0.3 * (Math.max(...xs) - Math.min(...xs)));
-            const my = Math.max(3 * R, 0.3 * (Math.max(...ys) - Math.min(...ys)));
-            x0 = Math.min(...xs) - mx; x1 = Math.max(...xs) + mx;
-            y0 = Math.max(EE.yNorth, Math.min(...ys) - my); y1 = Math.min(EE.ySouth, Math.max(...ys) + my);
-            // Seam-crossing views (unwrapped corner lngs spilling past ±180)
-            // CANNOT use the contiguous plane bbox: the world-copy
-            // displacement in the EE plane is 2·halfWidthAtY(y) — latitude-
-            // dependent — while the grid period is a fixed 1, so an
-            // unwrapped x-interval only addresses the neighbor copy's cells
-            // correctly at the equator (where the quantized period matches
-            // exactly). Generate instead per CANONICAL longitude window,
-            // clipping each side's cells at ±180 so the two sides butt-join:
-            // seamless at the equator by quantization, an honest grid-phase
-            // jump at other latitudes (inherent — no plane-uniform grid can
-            // be seam-consistent at every latitude; H3 is the recorded
-            // way out if earth-fixed cells at the seam ever matter more).
-            const lngsU = lls.map((l) => l.lng);
-            let lngLoU = Math.min(...lngsU), lngHiU = Math.max(...lngsU);
-            const md = 0.3 * (lngHiU - lngLoU);
-            lngLoU -= md; lngHiU += md;
-            if (lngLoU < -180 || lngHiU > 180) {
-                seamWindows = [];
-                const addW = (lo, hi) => { if (hi - lo > 1e-9) seamWindows.push([lo, hi]); };
-                addW(Math.max(-180, lngLoU), Math.min(180, lngHiU));
-                if (lngLoU < -180) addW(lngLoU + 360, 180);
-                if (lngHiU > 180) addW(-180, lngHiU - 360);
-                seamBounds = {lngLo: lngLoU, lngHi: lngHiU};
-            }
-        }
-        hexLastGen = {bucket: Math.floor(zoom), pointy: hexPointy, x0, x1, y0, y1, seam: seamBounds};
-        const features = [];
-        if (seamWindows) {
-            const hwOf = (y) => EE.halfWidthAtY(Math.max(EE.yNorth + 1e-6, Math.min(EE.ySouth - 1e-6, y)));
-            const hws = [hwOf(y0), hwOf(y1)];
-            if (y0 < 0.5 && y1 > 0.5) hws.push(0.5); // equator in view: widest rows
-            const hwMin = Math.min(...hws), hwMax = Math.max(...hws);
-            for (const [lo, hi] of seamWindows) {
-                // Column range: the window's plane-x span varies with the
-                // row's outline half-width; cover the extremes, test each
-                // cell exactly against the window at its own row below.
-                const xCands = [lo, hi].flatMap((L) => [0.5 + (L / 180) * hwMin, 0.5 + (L / 180) * hwMax]);
-                const wx0 = Math.min(...xCands) - 3 * R, wx1 = Math.max(...xCands) + 3 * R;
-                const atSeamE = hi === 180, atSeamW = lo === -180;
-                for (const [cx, cy, cellKey] of hexCenters(R, wx0, wx1, y0, y1, hexPointy)) {
-                    if (cy < EE.yNorth - R / 2 || cy > EE.ySouth + R / 2) continue;
-                    const hw = hwOf(cy);
-                    const cellLng = (cx - 0.5) * 180 / hw;
-                    const halfDeg = 1.2 * R * 180 / hw;
-                    // Accept a tolerance PAST ±180 on the seam edge: cells
-                    // centered on (or just beyond) the seam contribute their
-                    // near-side piece via the filter below — rejecting them
-                    // outright left a column of half-cell voids down the
-                    // seam. The complementary mean>0 / mean<0 piece filters
-                    // guarantee the two windows never double-draw.
-                    const reject = atSeamE ? (cellLng < lo - halfDeg || cellLng > 180 + halfDeg) :
-                        atSeamW ? (cellLng < -180 - halfDeg || cellLng > hi + halfDeg) :
-                            (cellLng < lo - halfDeg || cellLng > hi + halfDeg);
-                    if (reject) continue;
-                    let geometry = hexGeometry(hexRingLngLat(cx, cy, R, hexPointy));
-                    if (geometry.type === 'MultiPolygon' && (atSeamE || atSeamW)) {
-                        // Keep only this window's side of a seam-split cell;
-                        // the far side is covered by the other window's own
-                        // (phase-shifted) cells.
-                        const pieces = geometry.coordinates.filter((rings) => {
-                            const mean = rings[0].reduce((s, p) => s + p[0], 0) / rings[0].length;
-                            return atSeamE ? mean > 0 : mean < 0;
-                        });
-                        if (!pieces.length) continue;
-                        geometry = pieces.length === 1 ? {type: 'Polygon', coordinates: pieces[0]} : {type: 'MultiPolygon', coordinates: pieces};
-                    }
-                    features.push({
-                        type: 'Feature',
-                        properties: {land: hexLandFraction(sampler, cx, cy, R), cell: cellKey},
-                        geometry
-                    });
-                }
-            }
-            return {type: 'FeatureCollection', features};
-        }
-        for (const [cx, cy, cellKey] of hexCenters(R, x0, x1, y0, y1, hexPointy)) {
-            if (cy < EE.yNorth - R / 2 || cy > EE.ySouth + R / 2) continue;
-            // Trim to the projection outline: keep cells whose center is
-            // inside (edge cells overhang the seam; the engine clip trims
-            // them exactly at the curved outline). Test the CANONICAL x —
-            // with absolute-frame generation, a view near the antimeridian
-            // legitimately produces cells in the neighbor world copy
-            // (unwrapped x beyond [0,1]); testing raw cx culled every cell
-            // more than one column past the seam (owner repro at
-            // lng 180 / -179.2: east half of the viewport empty).
-            const hw = EE.halfWidthAtY(Math.max(EE.yNorth + 1e-6, Math.min(EE.ySouth - 1e-6, cy)));
-            const cxCanon = cx - Math.floor(cx);
-            if (Math.abs(cxCanon - 0.5) > hw + R) continue;
             features.push({
                 type: 'Feature',
-                properties: {land: hexLandFraction(sampler, cx, cy, R), cell: cellKey},
-                geometry: hexGeometry(hexRingLngLat(cx, cy, R, hexPointy))
+                properties: {land, cell},
+                geometry: h3EdgeLines(ring)
             });
         }
         return {type: 'FeatureCollection', features};
@@ -655,17 +566,26 @@
     }
 
     async function buildHexbinStyle() {
+        ensurePmtilesProtocol(); // the overture-base source below is pmtiles://
         return {
             version: 8,
             projection: {type: 'equal-earth'},
             sources: {
                 hexbins: {type: 'geojson', data: await buildHexbinFeatures()},
+                // Loaded (invisibly) for its water polygons: the
+                // Overture-informed land sampler queries this source to
+                // style cells with real coastline resolution.
+                'overture-base': {type: 'vector', url: overtureArchiveUrl('base')},
                 graticule: {type: 'geojson', data: graticule}
             },
             layers: [
                 {id: 'background', type: 'background', paint: {'background-color': '#eef3f6'}},
+                // Invisible layer so the water tiles actually load;
+                // querySourceFeatures needs a referencing style layer.
+                {id: 'hex-water-loader', type: 'fill', source: 'overture-base', 'source-layer': 'water', paint: {'fill-opacity': 0}},
                 {
                     id: 'hexbins-fill', type: 'fill', source: 'hexbins',
+                    filter: ['==', '$type', 'Polygon'],
                     paint: {
                         // Subtle water -> land shade by land fraction.
                         'fill-color': ['interpolate', ['linear'], ['get', 'land'],
@@ -673,7 +593,10 @@
                         'fill-opacity': 0.92
                     }
                 },
-                {id: 'hexbins-outline', type: 'line', source: 'hexbins', paint: {'line-color': '#ffffff', 'line-width': 0.8, 'line-opacity': 0.85}},
+                // Outlines come from the dedicated edge-line features
+                // (h3EdgeLines), NOT the polygon rings — the polygons'
+                // artificial ±180 clip edges must not be traced.
+                {id: 'hexbins-outline', type: 'line', source: 'hexbins', filter: ['==', '$type', 'LineString'], paint: {'line-color': '#ffffff', 'line-width': 0.8, 'line-opacity': 0.85}},
                 {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.5, 'line-opacity': 0.6}}
             ]
         };
@@ -1586,7 +1509,6 @@
         const overtureCheckbox = document.getElementById('diag-overture');
         const terrainCheckbox = document.getElementById('diag-terrain');
         const hexbinsCheckbox = document.getElementById('diag-hexbins');
-        const hexPointyCheckbox = document.getElementById('diag-hex-pointy');
 
         tissotCheckbox.disabled = false;
         tissotCheckbox.checked = useTissot;
@@ -1651,53 +1573,46 @@
         hexbinsCheckbox.checked = useHexbins;
         defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useTerrain && !useHexbins;
 
-        // Hexbin extras: pointy-top / H3 sub-toggles + zoom-adaptive
-        // regeneration (rebuild on zoom-bucket change or viewport move
-        // beyond z3, throttled by moveend).
-        const hexH3Checkbox = document.getElementById('diag-hex-h3');
-        hexPointyCheckbox.checked = hexPointy;
-        hexPointyCheckbox.disabled = !useHexbins || hexH3;
-        hexH3Checkbox.checked = hexH3;
-        hexH3Checkbox.disabled = !useHexbins;
-        hexPointyCheckbox.addEventListener('change', () => {
-            hexPointy = hexPointyCheckbox.checked;
-            setUrlParam('hexstyle', hexPointy ? 'pointy' : null);
-            refreshHexbins().catch(console.error);
-        });
-        hexH3Checkbox.addEventListener('change', () => {
-            hexH3 = hexH3Checkbox.checked;
-            hexPointyCheckbox.disabled = !hexbinsCheckbox.checked || hexH3;
-            setUrlParam('hexstyle', hexH3 ? 'h3' : (hexPointy ? 'pointy' : null));
-            refreshHexbins().catch(console.error);
-        });
+        // Hexbin regeneration: rebuild on zoom-bucket change or viewport
+        // move beyond z3, throttled by moveend. H3 cells are earth-fixed
+        // so regeneration never moves existing cells — hysteresis only
+        // avoids pointless rebuild churn.
         map.on('moveend', () => {
             if (!hexbinsCheckbox.checked || !hexLastGen) return;
             const bucket = Math.floor(map.getZoom());
-            let stale = bucket !== hexLastGen.bucket || hexPointy !== hexLastGen.pointy || hexH3 !== !!hexLastGen.h3;
+            let stale = bucket !== hexLastGen.bucket;
             if (!stale && map.getZoom() > 3) {
                 // Regen only when the view leaves the inner two-thirds of
                 // the generated region (hysteresis — the every-moveend
-                // first cut made cells visibly pop on each pan).
+                // first cut made cells visibly pop on each pan). Note the
+                // generation frame is unwrapped around the center at gen
+                // time, so near ±180 the canonical p.x can jump a world
+                // width and trigger an eager (harmless) regen.
                 const c = map.getCenter();
                 const p = EE.forward(c.lng, c.lat);
+                const inX = (hexLastGen.x1 - hexLastGen.x0) / 6;
                 const inY = (hexLastGen.y1 - hexLastGen.y0) / 6;
-                stale = p.y < hexLastGen.y0 + inY || p.y > hexLastGen.y1 - inY;
-                if (!stale && hexLastGen.seam) {
-                    // Seam-path generation is bounded in unwrapped
-                    // longitude, not plane x — test in the same terms.
-                    const s = hexLastGen.seam;
-                    let lngU = c.lng;
-                    const ref = (s.lngLo + s.lngHi) / 2;
-                    while (lngU - ref > 180) lngU -= 360;
-                    while (lngU - ref < -180) lngU += 360;
-                    const inL = (s.lngHi - s.lngLo) / 6;
-                    stale = lngU < s.lngLo + inL || lngU > s.lngHi - inL;
-                } else if (!stale) {
-                    const inX = (hexLastGen.x1 - hexLastGen.x0) / 6;
-                    stale = p.x < hexLastGen.x0 + inX || p.x > hexLastGen.x1 - inX;
-                }
+                stale = p.x < hexLastGen.x0 + inX || p.x > hexLastGen.x1 - inX ||
+                    p.y < hexLastGen.y0 + inY || p.y > hexLastGen.y1 - inY;
             }
             if (stale) refreshHexbins().catch(console.error);
+        });
+        // Overture-informed styling arrives late: the water tiles are not
+        // loaded when the style (and its initial hexbin data) is built.
+        // On idle, if the last generation had to fall back to the Natural
+        // Earth raster, retry once per generation — the retry itself
+        // marks ovTried, so a view with no queryable water cannot loop.
+        map.on('idle', () => {
+            if (!hexbinsCheckbox.checked || !hexLastGen) return;
+            if (hexLastGen.ov || hexLastGen.ovTried) return;
+            if (map.getZoom() <= 3) return;
+            hexLastGen.ovTried = true;
+            refreshHexbins().then(() => {
+                // The refresh replaced hexLastGen; if it STILL had no
+                // water features, carry the tried-mark forward so idle
+                // does not retry again until a real regen resets it.
+                if (hexLastGen && !hexLastGen.ov) hexLastGen.ovTried = true;
+            }).catch(console.error);
         });
 
         // Graticule lines overlay: enabled wherever the current style has
@@ -1729,8 +1644,6 @@
                 document.getElementById(LABEL_DATASETS[key].checkboxId).disabled = LABEL_DATASETS[key].mode !== activeMode;
             }
             graticuleCheckbox.disabled = demotilesCheckbox.checked;
-            hexPointyCheckbox.disabled = !hexbinsCheckbox.checked || hexH3;
-            document.getElementById('diag-hex-h3').disabled = !hexbinsCheckbox.checked;
         }
         refreshLabelCheckboxEnablement();
         applyLabelVisibility();
