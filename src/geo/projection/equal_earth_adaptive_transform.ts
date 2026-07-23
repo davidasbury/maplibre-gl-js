@@ -4,8 +4,8 @@ import {MercatorTransform} from './mercator_transform.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {clamp, lerp, zoomScale} from '../../util/util.ts';
-import {mercatorYfromLat} from '../mercator_coordinate.ts';
-import {equalEarthWorldFromLngLat, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
+import {mercatorXfromLng, mercatorYfromLat} from '../mercator_coordinate.ts';
+import {equalEarthWorldFromLngLat, equalEarthXScaleAtLat, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
 import type {OverscaledTileID, UnwrappedTileID, CanonicalTileID} from '../../tile/tile_id.ts';
 
 import type Point from '@mapbox/point-geometry';
@@ -255,6 +255,16 @@ export class EqualEarthAdaptiveTransform implements ITransform {
     private _equalEarthTransform: EqualEarthTransform;
 
     /**
+     * Step 13 lambda0 freeze: the central meridian used for drag while
+     * mid-blend or pure mercator, pinned at whatever `center.lng` was the
+     * instant the blend first left pure Equal Earth (null = unfrozen,
+     * pure-EE regime, lambda0 tracks `center.lng` live per Stage B).
+     * Dragging no longer rotates this value once frozen — it translates in
+     * blended-world-x instead ("drag degrades to planar pan").
+     */
+    private _frozenLambda0: number | null = null;
+
+    /**
      * True when the Equal Earth render path (shader variant, covering
      * tiles, constrain) should be used instead of plain mercator.
      */
@@ -264,6 +274,11 @@ export class EqualEarthAdaptiveTransform implements ITransform {
 
     setTransitionState(eeness: number, _errorCorrectionValue: number): void {
         this._eeness = eeness ?? 1;
+        if (this._eeness >= 1) {
+            this._frozenLambda0 = null;
+        } else if (this._frozenLambda0 === null) {
+            this._frozenLambda0 = this.center.lng;
+        }
         this._calcMatrices();
         this._equalEarthTransform.getCoveringTilesDetailsProvider().prepareNextFrame();
         this._mercatorTransform.getCoveringTilesDetailsProvider().prepareNextFrame();
@@ -286,6 +301,7 @@ export class EqualEarthAdaptiveTransform implements ITransform {
     clone(): ITransform {
         const clone = new EqualEarthAdaptiveTransform();
         clone._eeness = this._eeness;
+        clone._frozenLambda0 = this._frozenLambda0;
         clone.apply(this, false);
         return clone;
     }
@@ -450,6 +466,28 @@ export class EqualEarthAdaptiveTransform implements ITransform {
     }
 
     /**
+     * Blended rendered world-x of a point, lambda0-frozen counterpart to
+     * _blendedWorldY (step 13). Mercator's x (`lng/360 + 0.5`) and Equal
+     * Earth's x (`0.5 + (lng - lambda0) * scale(lat)`) are both affine in
+     * lng at fixed lat — pseudocylindrical, per the banana-tiling fact in
+     * the step-8 design doc — so the mix is affine too; `lambda0` here is
+     * the FROZEN meridian, not the live center, which is exactly what
+     * makes this "planar pan" instead of the rotating pure-EE model.
+     */
+    private _blendedWorldX(lng: number, lat: number, lambda0: number): number {
+        const mercX = mercatorXfromLng(lng);
+        if (this._eeness <= 0) return mercX;
+        const eeX = equalEarthWorldFromLngLat(lng, lat, lambda0).x;
+        if (this._eeness >= 1) return eeX;
+        return lerp(mercX, eeX, this._eeness);
+    }
+
+    /** d(_blendedWorldX)/d(lng) at fixed lat — exact, both terms affine. */
+    private _blendedXCoeffAtLat(lat: number): number {
+        return lerp(1 / 360, equalEarthXScaleAtLat(lat), this._eeness);
+    }
+
+    /**
      * Blend-aware constrain (owner design, ghost/pole-clamp round,
      * 2026-07-23): the vertical clamp and the pole-fit zoom floor must
      * track the RENDERED world, not the dominant endpoint's geometry.
@@ -506,9 +544,41 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         return this._helper.calculateCenterFromCameraLngLatAlt(lngLat, alt, bearing, pitch);
     }
 
+    /**
+     * Step 13 lambda0 freeze. Pure regimes (t=1 or t=0) delegate to the
+     * child transform's own exact closed-form solve, unchanged. Mid-blend,
+     * dragging no longer rotates lambda0 (the pure-EE model, still used by
+     * `EqualEarthTransform.setLocationAtPoint`) — it translates in
+     * blended-world-x/-y at the frozen lambda0, matching the shader's
+     * center-anchored positional blend and eliminating the discontinuity
+     * that used to sit at the t=0 handoff (step13-lambda0-gate.cjs L1).
+     * Pixel->world-unit conversion is the exact identity for a
+     * center-anchored, unrotated, unpitched view (`d/worldSize`, no
+     * perspective correction) — bearing/pitch=0 is already this whole
+     * transform's standing assumption (constrain, covering tiles).
+     */
     setLocationAtPoint(lnglat: LngLat, point: Point): void {
-        this.currentTransform.setLocationAtPoint(lnglat, point);
-        this.apply(this.currentTransform, false);
+        if (this._eeness <= 0 || this._eeness >= 1) {
+            this.currentTransform.setLocationAtPoint(lnglat, point);
+            this.apply(this.currentTransform, false);
+            return;
+        }
+        const lambda0 = this._frozenLambda0 ?? this.center.lng;
+        const ws = this.worldSize;
+        const dxUnit = (point.x - this.centerPoint.x) / ws;
+        const dyUnit = (point.y - this.centerPoint.y) / ws;
+
+        const targetY = clamp(this._blendedWorldY(lnglat.lat) - dyUnit, 0, 1);
+        const newCenterLat = this._latFromBlendedWorldY(targetY);
+
+        const targetX = this._blendedWorldX(lnglat.lng, lnglat.lat, lambda0) - dxUnit;
+        const refX = this._blendedWorldX(lnglat.lng, newCenterLat, lambda0);
+        const newCenterLng = lnglat.lng + (targetX - refX) / this._blendedXCoeffAtLat(newCenterLat);
+
+        this.setCenter(new LngLat(newCenterLng, newCenterLat));
+        if (this._helper._renderWorldCopies) {
+            this.setCenter(this.center.wrap());
+        }
     }
 
     locationToScreenPoint(lnglat: LngLat, terrain?: Terrain): Point {
