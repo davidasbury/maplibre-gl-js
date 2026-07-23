@@ -1344,6 +1344,26 @@
         center: [centerLng, centerLat],
         zoom
     });
+    let clipOn = false; // live transform state; checkbox wiring still happens at 'load'
+    // Clip flags must land on the FIRST styled frame, not at the 'load'
+    // event (owner report, 2026-07-23, confirmed by a headless state
+    // matrix): waiting until 'load' either clamps a below-pole-fit URL
+    // zoom UP against the pole-fit floor and silently loses the
+    // requested outline view (matrix case B: asked 0.9, got 1.49), or
+    // renders pole-fit frames and visibly re-zooms to the outline floor
+    // (no zoom param — the "fills the screen, then re-zooms" flash).
+    // style.load fires synchronously inside setStyle for inline styles,
+    // so this one-shot must be registered BEFORE applyStyle below.
+    if (useClip) {
+        clipOn = true;
+        map.once('style.load', () => {
+            const transform = map._camera && map._camera.transform;
+            if (!transform) return;
+            transform.outlineFitZoomFloor = true;
+            transform.clipAtProjectionOutline = useEngineClip;
+            map.jumpTo({zoom: params.has('zoom') ? zoom : 0});
+        });
+    }
     const initialMode = useHexbins ? 'hexbins' : useTerrain ? 'terrain' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : useChoropleth ? 'choropleth' : 'default';
     await applyStyle(initialMode);
     window.map = map;
@@ -1423,7 +1443,8 @@
     // straight chords are exact). At zooms above outline-fit the seam lies
     // outside the viewport and the fill degenerates to nothing visible --
     // correct by construction, no special-casing.
-    let clipOn = false; // becomes useClip once 'load' fires (map.project needs a live transform)
+    // (clipOn is declared before map construction — see the early clip
+    // block there; the 'load' handler still owns checkbox state + mask.)
     const clipCanvas = document.getElementById('clip-mask');
     const clipCtx = clipCanvas.getContext('2d');
     const CLIP_LAT_STEP_DEG = 1;
