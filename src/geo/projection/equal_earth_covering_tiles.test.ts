@@ -254,4 +254,49 @@ describe('EqualEarthCoveringTilesDetailsProvider (analytic window v2, via coveri
             expect(tiles.length).toBeLessThan(60);
         });
     });
+
+    describe('latitude-adaptive tile zoom (getTileZoomBias, owner terrain repro 2026-07-23)', () => {
+        test('bias is 0 for equator-spanning and equator-touching tiles', () => {
+            const provider = createTransform().getCoveringTilesDetailsProvider();
+            expect(provider.getTileZoomBias({x: 0, y: 0, z: 0})).toBe(0);
+            // z1 northern tile touches the equator at its south edge.
+            expect(provider.getTileZoomBias({x: 0, y: 0, z: 1})).toBe(0);
+        });
+
+        test('bias at ~lat 60 is about -0.41 zoom levels, monotonically stronger poleward', () => {
+            const provider = createTransform().getCoveringTilesDetailsProvider();
+            // z8 tile whose south (closest-to-equator) edge is ~59.9N:
+            // mercator y/256 = 0.29 -> y = 74; check the neighborhood.
+            // Equal Earth's parallels shrink far slower than cos(phi) (flat
+            // poles), so the bias is gentler than naive-cosine intuition:
+            // ~-0.41 at 60N, saturating near -0.75 at the pole lines.
+            const bias60 = provider.getTileZoomBias({x: 128, y: 73, z: 8});
+            expect(bias60).toBeLessThan(-0.35);
+            expect(bias60).toBeGreaterThan(-0.5);
+            const bias75 = provider.getTileZoomBias({x: 128, y: 40, z: 8});
+            const bias84 = provider.getTileZoomBias({x: 128, y: 8, z: 8});
+            expect(bias75).toBeLessThan(bias60);
+            expect(bias84).toBeLessThan(bias75);
+            // Never positive anywhere.
+            expect(provider.getTileZoomBias({x: 0, y: 127, z: 8})).toBeLessThanOrEqual(0);
+        });
+
+        test('lat-60 view at zoom 11.53 requests z12 for a 256px source, not the mercator-implied z13', () => {
+            const transform = createTransform(1100, 700);
+            transform.setZoom(11.53);
+            transform.setCenter(new LngLat(10.4688, 59.8551));
+            const tiles = coveringTiles(transform, {tileSize: 256, minzoom: 0, maxzoom: 22, roundZoom: true});
+            const zs = new Set(tiles.map(t => t.canonical.z));
+            expect(zs).toEqual(new Set([12]));
+        });
+
+        test('equatorial view at the same zoom still requests the mercator-implied z13', () => {
+            const transform = createTransform(1100, 700);
+            transform.setZoom(11.53);
+            transform.setCenter(new LngLat(10.4688, 0));
+            const tiles = coveringTiles(transform, {tileSize: 256, minzoom: 0, maxzoom: 22, roundZoom: true});
+            const zs = new Set(tiles.map(t => t.canonical.z));
+            expect(zs).toEqual(new Set([13]));
+        });
+    });
 });

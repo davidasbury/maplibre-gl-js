@@ -190,6 +190,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
     const allowVariableZoom = detailsProvider.allowVariableZoom(transform, options);
     
     const desiredZ = coveringZoomLevel(transform, options);
+    const unroundedDesiredZ = transform.zoom + scaleZoom(transform.tileSize / options.tileSize);
     const minZoom = options.minzoom || 0;
     const maxZoom = options.maxzoom !== undefined ? options.maxzoom : transform.maxZoom;
     const nominalZ = Math.min(Math.max(0, desiredZ), maxZoom);
@@ -248,11 +249,18 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
         let thisTileDesiredZ = desiredZ;
         if (allowVariableZoom) {
             const tileZoomFunc = options.calculateTileZoom || defaultCalculateTileZoom;
-            thisTileDesiredZ = tileZoomFunc(transform.zoom + scaleZoom(transform.tileSize / options.tileSize),
+            thisTileDesiredZ = tileZoomFunc(unroundedDesiredZ,
                 distToTile2d,
                 distanceZ,
                 distanceToCenter3d,
                 transform.fov);
+        }
+        if (detailsProvider.getTileZoomBias) {
+            // Bias the UNROUNDED zoom so the fractional bias participates in
+            // the single rounding step below rather than being applied to an
+            // already-rounded value (which would misplace the rounding
+            // boundary by up to a full level).
+            thisTileDesiredZ = (allowVariableZoom ? thisTileDesiredZ : unroundedDesiredZ) + detailsProvider.getTileZoomBias(tileID);
         }
         thisTileDesiredZ = (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ);
         thisTileDesiredZ = Math.max(0, thisTileDesiredZ);

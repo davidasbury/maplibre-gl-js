@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Terrain A/B (mercator vs equal-earth)</title>
+    <link rel="stylesheet" href="../../dist/maplibre-gl.css">
+    <style>html, body, #map { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<div id="map"></div>
+<script type="module">
+    import * as maplibregl from '../../dist/maplibre-gl-dev.mjs';
+    const q = new URLSearchParams(location.search);
+    const proj = q.get('proj') || 'mercator';
+    const lng = parseFloat(q.get('lng') || '10.4688');
+    const lat = parseFloat(q.get('lat') || '59.8551');
+    const zoom = parseFloat(q.get('zoom') || '11.53');
+    const hs = q.get('hs') !== '0';
+    const img = q.get('img') !== '0';
+
+    const layers = [
+        {id: 'background', type: 'background', paint: {'background-color': '#ffffff'}}
+    ];
+    if (img) {
+        layers.push({id: 's2-imagery', type: 'raster', source: 's2cloudless', paint: {'raster-opacity': 1.0}});
+    }
+    if (hs) {
+        layers.push({id: 'hillshade', type: 'hillshade', source: 'mapterhorn', paint: {
+            'hillshade-exaggeration': 0.5,
+            'hillshade-shadow-color': '#47597a',
+            'hillshade-highlight-color': '#fefaf2'
+        }});
+    }
+
+    window.map = new maplibregl.Map({
+        container: 'map',
+        center: [lng, lat],
+        zoom,
+        fadeDuration: 0,
+        style: {
+            version: 8,
+            projection: {type: proj},
+            sources: {
+                mapterhorn: {
+                    type: 'raster-dem',
+                    tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+                    tileSize: 512,
+                    encoding: 'terrarium',
+                    maxzoom: 12
+                },
+                s2cloudless: {
+                    type: 'raster',
+                    tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg'],
+                    tileSize: 256,
+                    maxzoom: 14
+                }
+            },
+            layers
+        }
+    });
+</script>
+</body>
+</html>

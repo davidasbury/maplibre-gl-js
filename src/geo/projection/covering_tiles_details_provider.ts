@@ -38,6 +38,17 @@ export interface CoveringTilesDetailsProvider {
     allowWorldCopies: () => boolean;
 
     /**
+     * Optional per-tile adjustment (in zoom levels, typically <= 0) added to
+     * the desired tile zoom before rounding. Lets a projection whose local
+     * scale diverges from mercator's (e.g. Equal Earth, which renders
+     * high-latitude mercator tiles compressed east-west) request
+     * correspondingly coarser tiles there instead of over-fetching at the
+     * mercator-implied zoom.
+     * @param tileID - Tile x, y and z for zoom.
+     */
+    getTileZoomBias?: (tileID: {x: number; y: number; z: number}) => number;
+
+    /**
      * Prepare cache for the next frame.
      */
     prepareNextFrame(): void;

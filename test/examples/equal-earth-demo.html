@@ -396,6 +396,18 @@
 
     let hexLastGen = null; // {bucket, pointy, x0, x1, y0, y1} — regen hysteresis
 
+    // Land-fraction sampling shared by both generation paths below.
+    function hexLandFraction(sampler, cx, cy, R) {
+        let hits = 0, n = 0;
+        for (let i = 0; i < 13; i++) {
+            const ang = (Math.PI / 6) * i;
+            const rr = i === 0 ? 0 : (i <= 6 ? 0.45 * R : 0.8 * R);
+            hits += sampler(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang));
+            n++;
+        }
+        return +(hits / n).toFixed(2);
+    }
+
     async function buildHexbinFeatures() {
         const sampler = await getLandSampler();
         const zoom = map ? map.getZoom() : 1.4;
@@ -407,43 +419,115 @@
         // subtracted lambda0 from corner longitudes and would have built
         // cells around Greenwich regardless of where the view was.
         let x0 = 0, x1 = 1, y0 = EE.yNorth, y1 = EE.ySouth;
+        let seamWindows = null, seamBounds = null;
         if (map && zoom > 3) {
             const corners = [[0, 0], [map.getContainer().clientWidth, 0], [0, map.getContainer().clientHeight], [map.getContainer().clientWidth, map.getContainer().clientHeight]];
             const lng0 = map.getCenter().lng;
-            const pts = corners.map(([px, py]) => {
+            const lls = corners.map(([px, py]) => {
                 const ll = map.unproject([px, py]);
                 // unwrap around the view center so the bbox is continuous
                 let lng = ll.lng;
                 while (lng - lng0 > 180) lng -= 360;
                 while (lng - lng0 < -180) lng += 360;
-                return EE.forward(lng, ll.lat);
+                return {lng, lat: ll.lat};
             });
+            const pts = lls.map(({lng, lat}) => EE.forward(lng, lat));
             const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
             const mx = Math.max(3 * R, 0.3 * (Math.max(...xs) - Math.min(...xs)));
             const my = Math.max(3 * R, 0.3 * (Math.max(...ys) - Math.min(...ys)));
             x0 = Math.min(...xs) - mx; x1 = Math.max(...xs) + mx;
             y0 = Math.max(EE.yNorth, Math.min(...ys) - my); y1 = Math.min(EE.ySouth, Math.max(...ys) + my);
+            // Seam-crossing views (unwrapped corner lngs spilling past ±180)
+            // CANNOT use the contiguous plane bbox: the world-copy
+            // displacement in the EE plane is 2·halfWidthAtY(y) — latitude-
+            // dependent — while the grid period is a fixed 1, so an
+            // unwrapped x-interval only addresses the neighbor copy's cells
+            // correctly at the equator (where the quantized period matches
+            // exactly). Generate instead per CANONICAL longitude window,
+            // clipping each side's cells at ±180 so the two sides butt-join:
+            // seamless at the equator by quantization, an honest grid-phase
+            // jump at other latitudes (inherent — no plane-uniform grid can
+            // be seam-consistent at every latitude; H3 is the recorded
+            // way out if earth-fixed cells at the seam ever matter more).
+            const lngsU = lls.map((l) => l.lng);
+            let lngLoU = Math.min(...lngsU), lngHiU = Math.max(...lngsU);
+            const md = 0.3 * (lngHiU - lngLoU);
+            lngLoU -= md; lngHiU += md;
+            if (lngLoU < -180 || lngHiU > 180) {
+                seamWindows = [];
+                const addW = (lo, hi) => { if (hi - lo > 1e-9) seamWindows.push([lo, hi]); };
+                addW(Math.max(-180, lngLoU), Math.min(180, lngHiU));
+                if (lngLoU < -180) addW(lngLoU + 360, 180);
+                if (lngHiU > 180) addW(-180, lngHiU - 360);
+                seamBounds = {lngLo: lngLoU, lngHi: lngHiU};
+            }
         }
-        hexLastGen = {bucket: Math.floor(zoom), pointy: hexPointy, x0, x1, y0, y1};
+        hexLastGen = {bucket: Math.floor(zoom), pointy: hexPointy, x0, x1, y0, y1, seam: seamBounds};
         const features = [];
+        if (seamWindows) {
+            const hwOf = (y) => EE.halfWidthAtY(Math.max(EE.yNorth + 1e-6, Math.min(EE.ySouth - 1e-6, y)));
+            const hws = [hwOf(y0), hwOf(y1)];
+            if (y0 < 0.5 && y1 > 0.5) hws.push(0.5); // equator in view: widest rows
+            const hwMin = Math.min(...hws), hwMax = Math.max(...hws);
+            for (const [lo, hi] of seamWindows) {
+                // Column range: the window's plane-x span varies with the
+                // row's outline half-width; cover the extremes, test each
+                // cell exactly against the window at its own row below.
+                const xCands = [lo, hi].flatMap((L) => [0.5 + (L / 180) * hwMin, 0.5 + (L / 180) * hwMax]);
+                const wx0 = Math.min(...xCands) - 3 * R, wx1 = Math.max(...xCands) + 3 * R;
+                const atSeamE = hi === 180, atSeamW = lo === -180;
+                for (const [cx, cy, cellKey] of hexCenters(R, wx0, wx1, y0, y1, hexPointy)) {
+                    if (cy < EE.yNorth - R / 2 || cy > EE.ySouth + R / 2) continue;
+                    const hw = hwOf(cy);
+                    const cellLng = (cx - 0.5) * 180 / hw;
+                    const halfDeg = 1.2 * R * 180 / hw;
+                    // Accept a tolerance PAST ±180 on the seam edge: cells
+                    // centered on (or just beyond) the seam contribute their
+                    // near-side piece via the filter below — rejecting them
+                    // outright left a column of half-cell voids down the
+                    // seam. The complementary mean>0 / mean<0 piece filters
+                    // guarantee the two windows never double-draw.
+                    const reject = atSeamE ? (cellLng < lo - halfDeg || cellLng > 180 + halfDeg) :
+                        atSeamW ? (cellLng < -180 - halfDeg || cellLng > hi + halfDeg) :
+                            (cellLng < lo - halfDeg || cellLng > hi + halfDeg);
+                    if (reject) continue;
+                    let geometry = hexGeometry(hexRingLngLat(cx, cy, R, hexPointy));
+                    if (geometry.type === 'MultiPolygon' && (atSeamE || atSeamW)) {
+                        // Keep only this window's side of a seam-split cell;
+                        // the far side is covered by the other window's own
+                        // (phase-shifted) cells.
+                        const pieces = geometry.coordinates.filter((rings) => {
+                            const mean = rings[0].reduce((s, p) => s + p[0], 0) / rings[0].length;
+                            return atSeamE ? mean > 0 : mean < 0;
+                        });
+                        if (!pieces.length) continue;
+                        geometry = pieces.length === 1 ? {type: 'Polygon', coordinates: pieces[0]} : {type: 'MultiPolygon', coordinates: pieces};
+                    }
+                    features.push({
+                        type: 'Feature',
+                        properties: {land: hexLandFraction(sampler, cx, cy, R), cell: cellKey},
+                        geometry
+                    });
+                }
+            }
+            return {type: 'FeatureCollection', features};
+        }
         for (const [cx, cy, cellKey] of hexCenters(R, x0, x1, y0, y1, hexPointy)) {
             if (cy < EE.yNorth - R / 2 || cy > EE.ySouth + R / 2) continue;
             // Trim to the projection outline: keep cells whose center is
             // inside (edge cells overhang the seam; the engine clip trims
-            // them exactly at the curved outline).
+            // them exactly at the curved outline). Test the CANONICAL x —
+            // with absolute-frame generation, a view near the antimeridian
+            // legitimately produces cells in the neighbor world copy
+            // (unwrapped x beyond [0,1]); testing raw cx culled every cell
+            // more than one column past the seam (owner repro at
+            // lng 180 / -179.2: east half of the viewport empty).
             const hw = EE.halfWidthAtY(Math.max(EE.yNorth + 1e-6, Math.min(EE.ySouth - 1e-6, cy)));
-            if (Math.abs(cx - 0.5) > hw + R) continue;
-            // Land fraction: center + 6 midpoints + 6 vertices at 0.7R.
-            let hits = 0, n = 0;
-            for (let i = 0; i < 13; i++) {
-                const ang = (Math.PI / 6) * i;
-                const rr = i === 0 ? 0 : (i <= 6 ? 0.45 * R : 0.8 * R);
-                hits += sampler(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang));
-                n++;
-            }
+            const cxCanon = cx - Math.floor(cx);
+            if (Math.abs(cxCanon - 0.5) > hw + R) continue;
             features.push({
                 type: 'Feature',
-                properties: {land: +(hits / n).toFixed(2), cell: cellKey},
+                properties: {land: hexLandFraction(sampler, cx, cy, R), cell: cellKey},
                 geometry: hexGeometry(hexRingLngLat(cx, cy, R, hexPointy))
             });
         }
@@ -1473,8 +1557,22 @@
                 // first cut made cells visibly pop on each pan).
                 const c = map.getCenter();
                 const p = EE.forward(c.lng, c.lat);
-                const inX = (hexLastGen.x1 - hexLastGen.x0) / 6, inY = (hexLastGen.y1 - hexLastGen.y0) / 6;
-                stale = p.x < hexLastGen.x0 + inX || p.x > hexLastGen.x1 - inX || p.y < hexLastGen.y0 + inY || p.y > hexLastGen.y1 - inY;
+                const inY = (hexLastGen.y1 - hexLastGen.y0) / 6;
+                stale = p.y < hexLastGen.y0 + inY || p.y > hexLastGen.y1 - inY;
+                if (!stale && hexLastGen.seam) {
+                    // Seam-path generation is bounded in unwrapped
+                    // longitude, not plane x — test in the same terms.
+                    const s = hexLastGen.seam;
+                    let lngU = c.lng;
+                    const ref = (s.lngLo + s.lngHi) / 2;
+                    while (lngU - ref > 180) lngU -= 360;
+                    while (lngU - ref < -180) lngU += 360;
+                    const inL = (s.lngHi - s.lngLo) / 6;
+                    stale = lngU < s.lngLo + inL || lngU > s.lngHi - inL;
+                } else if (!stale) {
+                    const inX = (hexLastGen.x1 - hexLastGen.x0) / 6;
+                    stale = p.x < hexLastGen.x0 + inX || p.x > hexLastGen.x1 - inX;
+                }
             }
             if (stale) refreshHexbins().catch(console.error);
         });

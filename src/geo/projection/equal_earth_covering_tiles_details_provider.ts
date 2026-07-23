@@ -255,6 +255,48 @@ export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDeta
         return true;
     }
 
+    /**
+     * Latitude-adaptive tile zoom (owner terrain repro, 2026-07-23): the
+     * shared `coveringZoomLevel` formula is mercator-calibrated — it assumes
+     * a tile's on-screen size matches mercator's inflated scale (1/cos φ).
+     * Equal Earth renders mercator tiles compressed east-west to the
+     * parallel's true relative width, so poleward of the equator the flat
+     * formula requests more resolution than the screen can show and — where
+     * the excess crosses a rounding boundary — a full zoom level too deep,
+     * multiplying the tile count (measured at Oslo, zoom 11.53: z13 instead
+     * of z12, 110 s2cloudless requests for one viewport instead of 36 —
+     * enough to trip tile-server throttling, whose coarse-ancestor fallback
+     * is what the owner screenshotted as "terrain misalignment").
+     *
+     * The bias is exact for the east-west axis: a mercator tile's pixels are
+     * uniform in λ, and Equal Earth draws Δλ at latitude φ at
+     * `equalEarthXScaleAtLat(φ) * worldSize` px/degree, so matching tile
+     * px/degree to screen px/degree shifts the required zoom by
+     * log2(360 * xScale(φ)) — exactly 0 at the equator (the equator spans
+     * the full unit world: 360 * xScale(0) === 1) and negative poleward
+     * (~-0.41 at 60°, saturating near -0.75 at the pole lines — EE's
+     * parallels shrink far slower than cos φ). The north-south axis never
+     * dominates:
+     * EE parallels shrink slower than cos φ (flat poles), while the
+     * north-south demand falls off as cos²φ/xScale — strictly weaker than
+     * east-west at every latitude, so the east-west bias alone is safe.
+     *
+     * Evaluated at the tile's closest-to-equator edge (the widest latitude
+     * the tile touches), so no part of the tile is under-resolved;
+     * equator-spanning tiles — including every low-zoom ancestor — get bias
+     * 0 and traverse exactly as before.
+     */
+    getTileZoomBias(tileID: {x: number; y: number; z: number}): number {
+        const numTiles = 1 << tileID.z;
+        const latTop = latFromMercatorY(tileID.y / numTiles);
+        const latBot = latFromMercatorY((tileID.y + 1) / numTiles);
+        if (latTop >= 0 !== latBot >= 0) {
+            return 0; // tile spans the equator, where the bias is exactly 0
+        }
+        const closestLat = Math.min(Math.abs(latTop), Math.abs(latBot));
+        return Math.min(0, Math.log2(360 * equalEarthXScaleAtLat(closestLat)));
+    }
+
     getTileBoundingVolume(tileID: {x: number; y: number; z: number}, wrap: number, _elevation: number, _options: CoveringTilesOptionsInternal): IBoundingVolume {
         const numTiles = 1 << tileID.z;
         const window = this._window;
