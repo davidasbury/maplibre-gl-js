@@ -142,6 +142,8 @@
     <div class="diag-toggle diag-sub" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
     <div class="diag-toggle diag-sub" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
     <div class="diag-toggle" title="Global Mapterhorn terrarium DEM driving a hillshade layer, blended over the demotiles watercolor PMTiles archive (Innsbruck region &mdash; the CORS-open mirror of the Cooper Hewitt watercolor tiles). Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain</label></div>
+    <div class="diag-toggle" title="Equal-area hexagonal bins: a uniform hex grid in the Equal Earth plane is EXACTLY equal-area on the globe (no H3 wobble, no pentagons). Cells shaded by land fraction; size adapts to zoom; grid glides with the central meridian."><label for="diag-hexbins"><input type="checkbox" id="diag-hexbins" disabled /> hexbins</label></div>
+    <div class="diag-toggle diag-sub" title="Pointy-top hex orientation (default flat-top)."><label for="diag-hex-pointy"><input type="checkbox" id="diag-hex-pointy" disabled /> pointy</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
 <script type="module">
@@ -210,6 +212,215 @@
     // endpoint serves NO CORS headers and is browser-blocked from this
     // origin — the demotiles archive is its usable regional mirror.
     const useTerrain = params.get('source') === 'terrain';
+
+    // ---- Equal-area hexbin basemap (owner request, 2026-07-23) ----------
+    // The trick that makes this projection-native: a uniform hex grid in
+    // the EE projected plane is EXACTLY equal-area on the globe (that is
+    // the definition of an equal-area projection) — no H3 cell-area wobble
+    // or pentagons, no geohash aspect chaos. And because a central-meridian
+    // change is a pure translation in EE x, the grid glides with the world
+    // under drag. Cells are shaded by land fraction, sampled against an
+    // offscreen rasterization of the Natural Earth land polygons in the
+    // same EE plane. Zoom-adaptive: cell size halves every 2 zoom levels,
+    // with generation limited to the viewport (+margin) beyond z3.
+    // `?hexstyle=pointy` switches hex orientation (default flat-top).
+    const useHexbins = params.get('source') === 'hexbins';
+    let hexPointy = params.get('hexstyle') === 'pointy';
+
+    // Minimal EE forward/inverse for page-side grid math — mirrors
+    // src/geo/equal_earth_coordinate.ts (values must match; the engine
+    // renders with the same constants).
+    const EE = (() => {
+        const A1 = 1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796;
+        const M = Math.sqrt(3) / 2;
+        const EXTENT_W = 2 * 2.7066299836960748;
+        function forward(lng, lat) {
+            const lam = lng * Math.PI / 180, phi = lat * Math.PI / 180;
+            const t = Math.asin(M * Math.sin(phi)), t2 = t * t, t6 = t2 * t2 * t2;
+            const x = lam * Math.cos(t) / (M * (A1 + 3 * A2 * t2 + t6 * (7 * A3 + 9 * A4 * t2)));
+            const y = t * (A1 + A2 * t2 + t6 * (A3 + A4 * t2));
+            return {x: x / EXTENT_W + 0.5, y: 0.5 - y / EXTENT_W};
+        }
+        function inverse(x, y) {
+            const px = (x - 0.5) * EXTENT_W, py = (0.5 - y) * EXTENT_W;
+            let t = py;
+            for (let i = 0; i < 12; i++) {
+                const t2 = t * t, t6 = t2 * t2 * t2;
+                const fy = t * (A1 + A2 * t2 + t6 * (A3 + A4 * t2)) - py;
+                const fpy = A1 + 3 * A2 * t2 + t6 * (7 * A3 + 9 * A4 * t2);
+                const d = fy / fpy;
+                t -= d;
+                if (Math.abs(d) < 1e-9) break;
+            }
+            const t2 = t * t, t6 = t2 * t2 * t2;
+            const lam = M * px * (A1 + 3 * A2 * t2 + t6 * (7 * A3 + 9 * A4 * t2)) / Math.cos(t);
+            const phi = Math.asin(Math.max(-1, Math.min(1, Math.sin(t) / M)));
+            return {lng: lam * 180 / Math.PI, lat: phi * 180 / Math.PI};
+        }
+        const yNorth = forward(0, 90).y, ySouth = forward(0, -90).y;
+        // Outline half-width at a given unit y (for grid trimming).
+        function halfWidthAtY(y) {
+            const lat = inverse(0.5, y).lat;
+            return forward(180, lat).x - 0.5;
+        }
+        return {forward, inverse, yNorth, ySouth, halfWidthAtY};
+    })();
+
+    // Land rasterization (built lazily once): Natural Earth polygons drawn
+    // filled into an offscreen canvas mapped over the EE content region.
+    let landSampler = null;
+    async function getLandSampler() {
+        if (landSampler) return landSampler;
+        const land = await (await fetch('../bench/data/naturalearth-land.json')).json();
+        const W = 2048, H = 1024;
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        const ctx = canvas.getContext('2d', {willReadFrequently: true});
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#fff';
+        const toPx = (lng, lat) => {
+            const p = EE.forward(lng, lat);
+            return [p.x * W, (p.y - EE.yNorth) / (EE.ySouth - EE.yNorth) * H];
+        };
+        const drawRing = (ring) => {
+            ring.forEach(([lng, lat], i) => {
+                const [x, y] = toPx(lng, lat);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.closePath();
+        };
+        for (const f of land.features) {
+            const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+            for (const rings of polys) {
+                ctx.beginPath();
+                for (const ring of rings) drawRing(ring);
+                ctx.fill('evenodd');
+            }
+        }
+        const data = ctx.getImageData(0, 0, W, H).data;
+        landSampler = (x, y) => {
+            const px = Math.max(0, Math.min(W - 1, Math.round(x * W)));
+            const py = Math.max(0, Math.min(H - 1, Math.round((y - EE.yNorth) / (EE.ySouth - EE.yNorth) * H)));
+            return data[(py * W + px) << 2] > 127 ? 1 : 0;
+        };
+        return landSampler;
+    }
+
+    // Hex grid over an EE-plane bbox. R = circumradius in unit-world units.
+    function hexCenters(R, x0, x1, y0, y1, pointy) {
+        const centers = [];
+        // flat-top: column pitch 1.5R, row pitch sqrt(3)R, odd columns
+        // offset half a row. pointy-top: transpose.
+        const a = 1.5 * R, b = Math.sqrt(3) * R;
+        if (!pointy) {
+            for (let col = Math.floor(x0 / a) - 1, x = col * a; x <= x1 + a; col++, x = col * a) {
+                const yOff = (col & 1) ? b / 2 : 0;
+                for (let y = Math.floor((y0 - yOff) / b) * b + yOff; y <= y1 + b; y += b) centers.push([x, y]);
+            }
+        } else {
+            for (let row = Math.floor(y0 / a) - 1, y = row * a; y <= y1 + a; row++, y = row * a) {
+                const xOff = (row & 1) ? b / 2 : 0;
+                for (let x = Math.floor((x0 - xOff) / b) * b + xOff; x <= x1 + b; x += b) centers.push([x, y]);
+            }
+        }
+        return centers;
+    }
+
+    function hexRingLngLat(cx, cy, R, pointy) {
+        const ring = [];
+        for (let i = 0; i < 6; i++) {
+            const ang = (Math.PI / 3) * i + (pointy ? Math.PI / 6 : 0);
+            const p = EE.inverse(cx + R * Math.cos(ang), cy + R * Math.sin(ang));
+            ring.push([p.lng, p.lat]);
+        }
+        ring.push(ring[0]);
+        return ring;
+    }
+
+    async function buildHexbinFeatures() {
+        const sampler = await getLandSampler();
+        const zoom = map ? map.getZoom() : 1.4;
+        // Cell size halves every zoom level, keeping the apparent size in
+        // a ~41-82px band (the world doubles per level; an every-2-levels
+        // schedule made cells GROW on screen - caught by the z5 check).
+        const R = 0.04 / Math.pow(2, Math.floor(zoom));
+        // Beyond z3, generate only for the visible EE bbox (+1 cell margin).
+        let x0 = 0, x1 = 1, y0 = EE.yNorth, y1 = EE.ySouth;
+        if (map && zoom > 3) {
+            const corners = [[0, 0], [map.getContainer().clientWidth, 0], [0, map.getContainer().clientHeight], [map.getContainer().clientWidth, map.getContainer().clientHeight]];
+            const lng0 = map.getCenter().lng;
+            const pts = corners.map(([px, py]) => {
+                const ll = map.unproject([px, py]);
+                return EE.forward(ll.lng - lng0, ll.lat);
+            });
+            const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+            // note: forward() above used lng relative to lambda0, matching
+            // the lambda0=0 grid frame the cells are generated in.
+            // Generous margin: proportional to the visible span, not just
+            // the cell size (a 3R margin under-covered ~25% of the frame
+            // at z5 - visible as an empty band on first regen).
+            const mx = Math.max(3 * R, 0.2 * (Math.max(...xs) - Math.min(...xs)));
+            const my = Math.max(3 * R, 0.2 * (Math.max(...ys) - Math.min(...ys)));
+            x0 = Math.min(...xs) - mx; x1 = Math.max(...xs) + mx;
+            y0 = Math.max(EE.yNorth, Math.min(...ys) - my); y1 = Math.min(EE.ySouth, Math.max(...ys) + my);
+        }
+        const features = [];
+        for (const [cx, cy] of hexCenters(R, x0, x1, y0, y1, hexPointy)) {
+            if (cy < EE.yNorth - R / 2 || cy > EE.ySouth + R / 2) continue;
+            // Trim to the projection outline: keep cells whose center is
+            // inside (edge cells overhang the seam; the engine clip trims
+            // them exactly at the curved outline).
+            const hw = EE.halfWidthAtY(Math.max(EE.yNorth + 1e-6, Math.min(EE.ySouth - 1e-6, cy)));
+            if (Math.abs(cx - 0.5) > hw + R) continue;
+            // Land fraction: center + 6 midpoints + 6 vertices at 0.7R.
+            let hits = 0, n = 0;
+            for (let i = 0; i < 13; i++) {
+                const ang = (Math.PI / 6) * i;
+                const rr = i === 0 ? 0 : (i <= 6 ? 0.45 * R : 0.8 * R);
+                hits += sampler(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang));
+                n++;
+            }
+            features.push({
+                type: 'Feature',
+                properties: {land: +(hits / n).toFixed(2)},
+                geometry: {type: 'Polygon', coordinates: [hexRingLngLat(cx, cy, R, hexPointy)]}
+            });
+        }
+        return {type: 'FeatureCollection', features};
+    }
+
+    async function refreshHexbins() {
+        const source = map.getSource('hexbins');
+        if (!source) return;
+        source.setData(await buildHexbinFeatures());
+    }
+
+    async function buildHexbinStyle() {
+        return {
+            version: 8,
+            projection: {type: 'equal-earth'},
+            sources: {
+                hexbins: {type: 'geojson', data: await buildHexbinFeatures()},
+                graticule: {type: 'geojson', data: graticule}
+            },
+            layers: [
+                {id: 'background', type: 'background', paint: {'background-color': '#eef3f6'}},
+                {
+                    id: 'hexbins-fill', type: 'fill', source: 'hexbins',
+                    paint: {
+                        // Subtle water -> land shade by land fraction.
+                        'fill-color': ['interpolate', ['linear'], ['get', 'land'],
+                            0, '#b8d3e6', 0.5, '#cbdcd2', 1, '#d3e3bd'],
+                        'fill-opacity': 0.92
+                    }
+                },
+                {id: 'hexbins-outline', type: 'line', source: 'hexbins', paint: {'line-color': '#ffffff', 'line-width': 0.8, 'line-opacity': 0.85}},
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.5, 'line-opacity': 0.6}}
+            ]
+        };
+    }
+
 
     // Step 7: `?choropleth=1` swaps the flat land fill for a bucketed
     // choropleth layered over the same local style (background + graticule
@@ -786,11 +997,12 @@
         };
     }
 
-    async function applyStyle(demotiles, choropleth, overture, terrain) {
-        if (terrain) map.setStyle(buildTerrainStyle());
-        else if (overture) map.setStyle(buildOvertureStyle());
-        else if (demotiles) map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
-        else if (choropleth) map.setStyle(await buildChoroplethStyle());
+    async function applyStyle(mode) {
+        if (mode === 'hexbins') map.setStyle(await buildHexbinStyle());
+        else if (mode === 'terrain') map.setStyle(buildTerrainStyle());
+        else if (mode === 'overture') map.setStyle(buildOvertureStyle());
+        else if (mode === 'demotiles') map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
+        else if (mode === 'choropleth') map.setStyle(await buildChoroplethStyle());
         else map.setStyle(buildLandStyle());
     }
 
@@ -809,7 +1021,8 @@
         center: [centerLng, centerLat],
         zoom
     });
-    await applyStyle(useDemotiles, useChoropleth, useOverture, useTerrain);
+    const initialMode = useHexbins ? 'hexbins' : useTerrain ? 'terrain' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : useChoropleth ? 'choropleth' : 'default';
+    await applyStyle(initialMode);
     window.map = map;
 
     // Tissot mode wiring: source + 3 layers, added/removed through these two
@@ -1002,6 +1215,8 @@
         const demotilesCheckbox = document.getElementById('diag-demotiles');
         const overtureCheckbox = document.getElementById('diag-overture');
         const terrainCheckbox = document.getElementById('diag-terrain');
+        const hexbinsCheckbox = document.getElementById('diag-hexbins');
+        const hexPointyCheckbox = document.getElementById('diag-hex-pointy');
 
         tissotCheckbox.disabled = false;
         tissotCheckbox.checked = useTissot;
@@ -1058,11 +1273,33 @@
         demotilesCheckbox.disabled = false;
         overtureCheckbox.disabled = false;
         terrainCheckbox.disabled = false;
-        choroplethCheckbox.checked = useChoropleth && !useDemotiles && !useOverture && !useTerrain;
+        hexbinsCheckbox.disabled = false;
+        choroplethCheckbox.checked = useChoropleth && !useDemotiles && !useOverture && !useTerrain && !useHexbins;
         demotilesCheckbox.checked = useDemotiles;
         overtureCheckbox.checked = useOverture;
         terrainCheckbox.checked = useTerrain;
-        defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useTerrain;
+        hexbinsCheckbox.checked = useHexbins;
+        defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useTerrain && !useHexbins;
+
+        // Hexbin extras: pointy-top orientation sub-toggle + zoom-adaptive
+        // regeneration (rebuild on zoom-bucket change or viewport move
+        // beyond z3, throttled by moveend).
+        hexPointyCheckbox.checked = hexPointy;
+        hexPointyCheckbox.disabled = !useHexbins;
+        hexPointyCheckbox.addEventListener('change', () => {
+            hexPointy = hexPointyCheckbox.checked;
+            setUrlParam('hexstyle', hexPointy ? 'pointy' : null);
+            refreshHexbins().catch(console.error);
+        });
+        let lastHexZoomBucket = Math.floor(map.getZoom() / 2);
+        map.on('moveend', () => {
+            if (!hexbinsCheckbox.checked) return;
+            const bucket = Math.floor(map.getZoom());
+            if (bucket !== lastHexZoomBucket || map.getZoom() > 3) {
+                lastHexZoomBucket = bucket;
+                refreshHexbins().catch(console.error);
+            }
+        });
 
         // Graticule lines overlay: enabled wherever the current style has
         // the layer (all local styles + overture; not demotiles).
@@ -1093,19 +1330,29 @@
                 document.getElementById(LABEL_DATASETS[key].checkboxId).disabled = LABEL_DATASETS[key].mode !== activeMode;
             }
             graticuleCheckbox.disabled = demotilesCheckbox.checked;
+            hexPointyCheckbox.disabled = !hexbinsCheckbox.checked;
         }
         refreshLabelCheckboxEnablement();
         applyLabelVisibility();
 
+        function activeDataMode() {
+            if (hexbinsCheckbox.checked) return 'hexbins';
+            if (terrainCheckbox.checked) return 'terrain';
+            if (overtureCheckbox.checked) return 'overture';
+            if (demotilesCheckbox.checked) return 'demotiles';
+            if (choroplethCheckbox.checked) return 'choropleth';
+            return 'default';
+        }
         function refreshStyleFromCheckboxes() {
-            applyStyle(demotilesCheckbox.checked, choroplethCheckbox.checked, overtureCheckbox.checked, terrainCheckbox.checked).catch(console.error);
+            const mode = activeDataMode();
+            applyStyle(mode).catch(console.error);
             refreshLabelCheckboxEnablement();
-            setUrlParam('source', terrainCheckbox.checked ? 'terrain' : overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null);
-            setUrlParam('choropleth', choroplethCheckbox.checked ? '1' : null);
+            setUrlParam('source', (mode === 'hexbins' || mode === 'terrain' || mode === 'overture' || mode === 'demotiles') ? mode : null);
+            setUrlParam('choropleth', mode === 'choropleth' ? '1' : null);
         }
         // Radio-group behavior: checking any data layer unchecks the rest;
         // unchecking the active one directly falls back to "default".
-        const dataLayerCheckboxes = [defaultCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, terrainCheckbox];
+        const dataLayerCheckboxes = [defaultCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, terrainCheckbox, hexbinsCheckbox];
         for (const checkbox of dataLayerCheckboxes) {
             checkbox.addEventListener('change', () => {
                 if (checkbox.checked) {
