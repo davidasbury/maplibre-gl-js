@@ -8,6 +8,7 @@
 </head>
 <body>
 <div id="map"></div>
+<script src="./pmtiles-4.4.1.min.js"></script>
 <script type="module">
     import * as maplibregl from '../../dist/maplibre-gl-dev.mjs';
     const q = new URLSearchParams(location.search);
@@ -15,14 +16,34 @@
     const lng = parseFloat(q.get('lng') || '10.4688');
     const lat = parseFloat(q.get('lat') || '59.8551');
     const zoom = parseFloat(q.get('zoom') || '11.53');
-    const hs = q.get('hs') !== '0';
-    const img = q.get('img') !== '0';
+    // Layer toggles accept BOTH this page's short names and the demo
+    // page's names (the owner's 2026-07-23 discriminator run used
+    // shade/image and they silently no-opped — a page gap, now closed):
+    // hs/shade = hillshade, img/image = imagery, vec/overture = Overture
+    // land+water fills (vector), for isolating vector-vs-raster
+    // displacement under either projection.
+    const flag = (names, dflt) => {
+        for (const n of names) {
+            if (q.has(n)) return q.get(n) !== '0';
+        }
+        return dflt;
+    };
+    const hs = flag(['hs', 'shade'], true);
+    const img = flag(['img', 'image'], true);
+    const vec = flag(['vec', 'overture'], false);
+    if (vec && window.pmtiles) {
+        maplibregl.addProtocol('pmtiles', new pmtiles.Protocol().tile);
+    }
 
     const layers = [
         {id: 'background', type: 'background', paint: {'background-color': '#ffffff'}}
     ];
     if (img) {
         layers.push({id: 's2-imagery', type: 'raster', source: 's2cloudless', paint: {'raster-opacity': 1.0}});
+    }
+    if (vec) {
+        layers.push({id: 'ov-land', type: 'fill', source: 'overture-base', 'source-layer': 'land', paint: {'fill-color': '#5a8f5a', 'fill-opacity': 0.45}});
+        layers.push({id: 'ov-water', type: 'fill', source: 'overture-base', 'source-layer': 'water', paint: {'fill-color': '#3a6a9a', 'fill-opacity': 0.45}});
     }
     if (hs) {
         layers.push({id: 'hillshade', type: 'hillshade', source: 'mapterhorn', paint: {
@@ -53,7 +74,11 @@
                     tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg'],
                     tileSize: 256,
                     maxzoom: 14
-                }
+                },
+                ...(vec ? {'overture-base': {
+                    type: 'vector',
+                    url: 'pmtiles://https://overturemaps-extras-us-west-2.s3.amazonaws.com/tiles/2026-06-17.0/base.pmtiles'
+                }} : {})
             },
             layers
         }
