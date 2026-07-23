@@ -438,6 +438,7 @@ export class Painter {
         if (this.nextStencilID + tileIDs.length > 128) {
             // we'll run out of fresh IDs so we need to clear and start from scratch
             this.clearStencil();
+            this._renderSeamClipMaskIfNeeded();
         }
 
         const context = this.context;
@@ -526,6 +527,9 @@ export class Painter {
 
         if (this.nextStencilID + 1 > 128) {
             this.clearStencil();
+            // A mid-frame stencil clear wipes the seam bit; repaint it
+            // before anything tests against it (flag-guarded, cheap).
+            this._renderSeamClipMaskIfNeeded();
         }
 
         const id = this.nextStencilID++;
@@ -551,7 +555,15 @@ export class Painter {
      * values.
      * Returns [StencilMode for tile overscaleZ map, sortedCoords].
      */
-    getStencilConfigForOverlapAndUpdateStencilID(tileIDs: OverscaledTileID[]): [{
+    // Raster/hillshade overlap stencils: TEST masks are 0xFF while WRITE
+    // masks stay 0x7F — refs are always <= 127 (the 128 cap reserves bit
+    // 7), so wherever the seam-clip pre-pass set bit 7 the stencil value
+    // reads >= 128 and every GEQUAL/GREATER test fails: raster content
+    // clips at the projection outline for free, and behaves identically
+    // when the seam clip is off (bit 7 never set). The first cut used
+    // 0x7F test masks, leaving raster seam-blind — owner-visible as
+    // hillshade beyond the outline.
+        getStencilConfigForOverlapAndUpdateStencilID(tileIDs: OverscaledTileID[]): [{
         [_: number]: Readonly<StencilMode>;
     }, OverscaledTileID[]] {
         const gl = this.context.gl;
@@ -562,10 +574,11 @@ export class Painter {
             this.currentStencilSource = undefined;
             if (this.nextStencilID + stencilValues > 128) {
                 this.clearStencil();
+                this._renderSeamClipMaskIfNeeded();
             }
             const zToStencilMode = {};
             for (let i = 0; i < stencilValues; i++) {
-                zToStencilMode[i + minTileZ] = new StencilMode({func: gl.GEQUAL, mask: 0x7F}, i + this.nextStencilID, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilMode[i + minTileZ] = new StencilMode({func: gl.GEQUAL, mask: 0xFF}, i + this.nextStencilID, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
             }
             this.nextStencilID += stencilValues;
             return [zToStencilMode, coords];
@@ -583,14 +596,17 @@ export class Painter {
         const minTileZ = coords[coords.length - 1].overscaledZ;
         const stencilValues = coords[0].overscaledZ - minTileZ + 1;
 
+        // Unconditional clear: this was the primary hillshade seam leak —
+        // the subdivision two-pass wiped the seam bit every time.
         this.clearStencil();
+        this._renderSeamClipMaskIfNeeded();
 
         if (stencilValues > 1) {
             const zToStencilModeHigh = {};
             const zToStencilModeLow = {};
             for (let i = 0; i < stencilValues; i++) {
-                zToStencilModeHigh[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0x7F}, stencilValues + 1 + i, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
-                zToStencilModeLow[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0x7F}, 1 + i, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilModeHigh[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, stencilValues + 1 + i, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilModeLow[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, 1 + i, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE);
             }
             this.nextStencilID = stencilValues * 2 + 1;
             return [
@@ -601,8 +617,8 @@ export class Painter {
         } else {
             this.nextStencilID = 3;
             return [
-                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0x7F}, 2, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE)},
-                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0x7F}, 1, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE)},
+                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 2, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE)},
+                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 1, 0x7F, gl.KEEP, gl.KEEP, gl.REPLACE)},
                 coords
             ];
         }
