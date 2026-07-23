@@ -8,7 +8,7 @@ import {mercatorXfromLng, mercatorYfromLat} from '../mercator_coordinate.ts';
 import {equalEarthWorldFromLngLat, equalEarthXScaleAtLat, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
 import type {OverscaledTileID, UnwrappedTileID, CanonicalTileID} from '../../tile/tile_id.ts';
 
-import type Point from '@mapbox/point-geometry';
+import Point from '@mapbox/point-geometry';
 import type {MercatorCoordinate} from '../mercator_coordinate.ts';
 import type {LngLatBounds} from '../lng_lat_bounds.ts';
 import type {Frustum} from '../../util/primitives/frustum.ts';
@@ -581,16 +581,60 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         }
     }
 
+    /**
+     * Step 13 CPU-query blend. Pure regimes and terrain (adaptive+terrain
+     * is untested/unsupported, per the static-EE precedent) delegate to
+     * the dominant child exactly as before. Mid-blend, this now answers
+     * from the same _blendedWorldX/-Y model setLocationAtPoint solves in
+     * (frozen lambda0, center-anchored) instead of the dominant-endpoint
+     * approximation the whole adaptive transform used previously
+     * (`transitionAt`/`meridianBowDegrees`-style callers, symbol
+     * placement, hit-testing, `map.project`/`unproject` all go through
+     * this). Known residual: the EE shader render itself always
+     * self-centers on the LIVE `center.lng` (Stage B's "lambda0 ≡
+     * center.lng" is baked into EqualEarthTransform's own tile math, not
+     * something this transform can override per-point), so for points far
+     * in latitude from the center, after a long sustained mid-blend drag
+     * has moved `center.lng` well away from the frozen value, this CPU
+     * answer and the true GPU pixel can drift apart — a second-order
+     * effect (product of drag distance since freeze and latitude spread
+     * from center), same category as the previously-accepted
+     * dominant-endpoint approximation it replaces, not chased further
+     * here.
+     */
     locationToScreenPoint(lnglat: LngLat, terrain?: Terrain): Point {
-        return this.currentTransform.locationToScreenPoint(lnglat, terrain);
+        if (terrain || this._eeness <= 0 || this._eeness >= 1) {
+            return this.currentTransform.locationToScreenPoint(lnglat, terrain);
+        }
+        const lambda0 = this._frozenLambda0 ?? this.center.lng;
+        const ws = this.worldSize;
+        const dx = (this._blendedWorldX(lnglat.lng, lnglat.lat, lambda0) - this._blendedWorldX(this.center.lng, this.center.lat, lambda0)) * ws;
+        const dy = (this._blendedWorldY(lnglat.lat) - this._blendedWorldY(this.center.lat)) * ws;
+        return new Point(this.centerPoint.x + dx, this.centerPoint.y + dy);
     }
 
     screenPointToMercatorCoordinate(p: Point, terrain?: Terrain): MercatorCoordinate {
         return this.currentTransform.screenPointToMercatorCoordinate(p, terrain);
     }
 
+    /** Inverse of locationToScreenPoint — see its doc comment. */
     screenPointToLocation(p: Point, terrain?: Terrain): LngLat {
-        return this.currentTransform.screenPointToLocation(p, terrain);
+        if (terrain || this._eeness <= 0 || this._eeness >= 1) {
+            return this.currentTransform.screenPointToLocation(p, terrain);
+        }
+        const lambda0 = this._frozenLambda0 ?? this.center.lng;
+        const ws = this.worldSize;
+        const dxUnit = (p.x - this.centerPoint.x) / ws;
+        const dyUnit = (p.y - this.centerPoint.y) / ws;
+
+        const targetY = clamp(this._blendedWorldY(this.center.lat) + dyUnit, 0, 1);
+        const lat = this._latFromBlendedWorldY(targetY);
+
+        const targetX = this._blendedWorldX(this.center.lng, this.center.lat, lambda0) + dxUnit;
+        const refX = this._blendedWorldX(this.center.lng, lat, lambda0);
+        const lng = this.center.lng + (targetX - refX) / this._blendedXCoeffAtLat(lat);
+
+        return new LngLat(lng, lat);
     }
 
     isPointOnMapSurface(p: Point, terrain?: Terrain): boolean {
