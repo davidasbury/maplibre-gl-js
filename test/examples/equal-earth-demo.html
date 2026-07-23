@@ -133,7 +133,7 @@
     <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
     <div class="diag-toggle" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><label for="diag-graticule"><input type="checkbox" id="diag-graticule" disabled /> graticule</label></div>
     <div class="diag-toggle diag-sub" title="Graticule line labels (meridian/parallel degree values, line-following along bowing meridians). Overture mode only &mdash; that style carries the label layer."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> labels</label></div>
-    <div class="diag-toggle"><label for="diag-coast" title="Coastline polylines from the Overture water polygons (their boundaries), any data layer. Zoom generalization rides the Overture tile pyramid; a bespoke coastline build (OSM/Esri islands) would be preprocessed with Mapshaper (Visvalingam), not Douglas-Peucker."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-shade" title="Mapterhorn hillshade as a standalone blend layer over any data layer (decoupled from the imagery)."><input type="checkbox" id="diag-shade" disabled /> shade</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any data layer &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
+    <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any data layer. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-shade" title="Mapterhorn hillshade as a standalone blend layer over any data layer (decoupled from the imagery)."><input type="checkbox" id="diag-shade" disabled /> shade</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any data layer &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
     <div class="diag-section">data layers</div>
     <div class="diag-toggle" title="Local Natural Earth land polygons + graticule (network-free default)."><label for="diag-default"><input type="checkbox" id="diag-default" disabled /> default</label></div>
     <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp)."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
@@ -580,8 +580,12 @@
                 hexbins: {type: 'geojson', data: await buildHexbinFeatures()},
                 // Loaded (invisibly) for its water polygons: the
                 // Overture-informed land sampler queries this source to
-                // style cells with real coastline resolution.
-                'overture-base': {type: 'vector', url: overtureArchiveUrl('base')},
+                // style cells with real coastline resolution. maxzoom 10
+                // overzooms beyond that — z10 water detail is plenty for
+                // cell-fraction sampling, and without the cap one z12.9
+                // hexbin viewport pulled ~54 MB of base tiles (owner
+                // screenshot, 2026-07-22 20:49).
+                'overture-base': {type: 'vector', url: overtureArchiveUrl('base'), maxzoom: 10},
                 graticule: {type: 'geojson', data: graticule}
             },
             layers: [
@@ -1501,14 +1505,22 @@
     // ANY data layer — hillshade decoupled from the terrain mode's
     // welded imagery. Each is injected into the live style and
     // re-applied on style swaps below.
-    // - coast: the Overture water polygons' boundaries ARE the best
-    //   globally consistent coastline available to this page; drawing
-    //   them as lines complements and cross-validates the hexbin
-    //   coastline-crossing class. Zoom generalization rides the Overture
-    //   tile pyramid; if a bespoke coastline dataset (OSM-derived, Esri
-    //   islands) is ever built, preprocess with Mapshaper's Visvalingam
-    //   (weighted effective area) — not Douglas-Peucker (owner note,
-    //   github.com/mbloch/mapshaper).
+    // - coast (REWORKED round 7): Natural Earth coastline POLYLINES,
+    //   multi-scale (110m/50m/10m by zoom band). The first cut derived
+    //   coastlines from the Overture water polygon boundaries and the
+    //   owner's screenshots (2026-07-22 20:49+) killed it: tile-clip
+    //   lattices across the ocean, pond speckle, river channels — tiled
+    //   POLYGONS are not a coastline dataset. NE is the curated-
+    //   philosophy interim: real polylines, one consistent judgment on
+    //   how far to follow estuaries inland (the Ob-class call the owner
+    //   flagged as the field's perennial disagreement). An OSM-derived
+    //   multi-scale build stays future work — preprocess with
+    //   Mapshaper's Visvalingam (weighted effective area), not
+    //   Douglas-Peucker (owner note, github.com/mbloch/mapshaper).
+    //   Definition mismatch, accepted for now: NE coastline is OCEAN
+    //   coastline, while the hexbin coast class flags any water
+    //   crossing (lakes included) — lake-shore cells won't have a
+    //   matching polyline. NE lakes rings are the obvious add if wanted.
     // - shade/image reuse the terrain mode's source configs verbatim;
     //   in terrain mode itself the overlay ids stay distinct, so
     //   toggling there double-draws rather than fighting the mode's own
@@ -1516,6 +1528,33 @@
     let coastOn = params.get('coast') === '1';
     let shadeOn = params.get('shade') === '1';
     let imageOn = params.get('image') === '1';
+
+    const NE_COAST_URL = (scale) => `https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_${scale}_coastline.geojson`;
+    const neCoastCache = new Map(); // scale -> Promise<FeatureCollection>
+    let neCoastApplied = null; // scale currently in the ne-coast source
+    function neCoastScaleForZoom(z) {
+        return z < 3 ? '110m' : z < 6 ? '50m' : '10m';
+    }
+    function fetchNeCoast(scale) {
+        if (!neCoastCache.has(scale)) {
+            neCoastCache.set(scale, fetch(NE_COAST_URL(scale)).then((r) => {
+                if (!r.ok) throw new Error(`NE coastline ${scale}: HTTP ${r.status}`);
+                return r.json();
+            }).catch((e) => { neCoastCache.delete(scale); throw e; }));
+        }
+        return neCoastCache.get(scale);
+    }
+    async function applyNeCoastData() {
+        const scale = neCoastScaleForZoom(map.getZoom());
+        if (!coastOn || neCoastApplied === scale || !map.getSource('ne-coast')) return;
+        const data = await fetchNeCoast(scale);
+        // Re-check after the await: the style may have swapped or the
+        // zoom band moved on while the fetch was in flight.
+        if (!coastOn || !map.getSource('ne-coast')) return;
+        if (neCoastScaleForZoom(map.getZoom()) !== scale) return;
+        map.getSource('ne-coast').setData(data);
+        neCoastApplied = scale;
+    }
     function applyExtraOverlays() {
         if (!map.getStyle()) return;
         const beforeGrat = map.getLayer('graticule') ? 'graticule' : undefined;
@@ -1555,19 +1594,23 @@
             map.removeLayer('shade-ov');
         }
         if (coastOn) {
-            ensurePmtilesProtocol();
-            if (!map.getSource('overture-base')) {
-                map.addSource('overture-base', {type: 'vector', url: overtureArchiveUrl('base')});
+            if (!map.getSource('ne-coast')) {
+                map.addSource('ne-coast', {type: 'geojson', data: {type: 'FeatureCollection', features: []}});
+                neCoastApplied = null; // fresh (empty) source after a style swap
             }
             if (!map.getLayer('coast-ov')) {
-                map.addLayer({id: 'coast-ov', type: 'line', source: 'overture-base', 'source-layer': 'water', paint: {
+                map.addLayer({id: 'coast-ov', type: 'line', source: 'ne-coast', paint: {
                     'line-color': '#33566e', 'line-width': 1.0, 'line-opacity': 0.9
                 }}, beforeGrat);
             }
+            applyNeCoastData().catch(console.error);
         } else if (map.getLayer('coast-ov')) {
             map.removeLayer('coast-ov');
         }
     }
+    map.on('zoomend', () => {
+        applyNeCoastData().catch(console.error);
+    });
 
     map.on('style.load', () => {
         if (tissotOn) addTissotOverlay();
