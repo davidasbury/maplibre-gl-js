@@ -143,9 +143,10 @@
     <div class="diag-toggle diag-sub" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
     <div class="diag-toggle" title="Global Mapterhorn terrarium DEM driving a hillshade layer, blended over the demotiles watercolor PMTiles archive (Innsbruck region &mdash; the CORS-open mirror of the Cooper Hewitt watercolor tiles). Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain</label></div>
     <div class="diag-toggle" title="Equal-area hexagonal bins: a uniform hex grid in the Equal Earth plane is EXACTLY equal-area on the globe (no H3 wobble, no pentagons). Cells shaded by land fraction; size adapts to zoom; grid glides with the central meridian."><label for="diag-hexbins"><input type="checkbox" id="diag-hexbins" disabled /> hexbins</label></div>
-    <div class="diag-toggle diag-sub" title="Pointy-top hex orientation (default flat-top)."><label for="diag-hex-pointy"><input type="checkbox" id="diag-hex-pointy" disabled /> pointy</label></div>
+    <div class="diag-toggle diag-sub"><label for="diag-hex-pointy" title="Pointy-top hex orientation (default flat-top). Plane-grid modes only."><input type="checkbox" id="diag-hex-pointy" disabled /> pointy</label> <label for="diag-hex-h3" title="Uber H3 cells instead of the EE-plane grid: earth-fixed and seam-proof at every latitude (the plane grid cannot be — see the 2026-07-23 findings doc), ~2% area wobble within a resolution, 12 pentagons."><input type="checkbox" id="diag-hex-h3" disabled /> h3</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
+<script src="./h3-js-4.3.0.umd.js"></script>
 <script type="module">
     import * as maplibregl from '../../dist/maplibre-gl-dev.mjs';
 
@@ -223,9 +224,11 @@
     // offscreen rasterization of the Natural Earth land polygons in the
     // same EE plane. Zoom-adaptive: cell size halves every 2 zoom levels,
     // with generation limited to the viewport (+margin) beyond z3.
-    // `?hexstyle=pointy` switches hex orientation (default flat-top).
+    // `?hexstyle=pointy` switches hex orientation (default flat-top);
+    // `?hexstyle=h3` switches to Uber H3 cells (earth-fixed, seam-proof).
     const useHexbins = params.get('source') === 'hexbins';
     let hexPointy = params.get('hexstyle') === 'pointy';
+    let hexH3 = params.get('hexstyle') === 'h3';
 
     // Minimal EE forward/inverse for page-side grid math — mirrors
     // src/geo/equal_earth_coordinate.ts (values must match; the engine
@@ -408,7 +411,118 @@
         return +(hits / n).toFixed(2);
     }
 
+    // H3 mode (owner request, 2026-07-23): earth-fixed hexagonal cells
+    // from Uber's H3 grid (vendored h3-js UMD, window.h3). Trades the
+    // EE-plane grid's exact equal-area for cell identity that survives
+    // any central meridian and the antimeridian: the plane grid provably
+    // cannot be seam-consistent at every latitude (world copies displace
+    // by 2·halfWidth(φ) while the grid period is fixed — the 2026-07-23
+    // findings doc), while H3 cells never shear and render identically
+    // on both sides of ±180. Area wobble ~2% within a resolution,
+    // 12 pentagons per resolution.
+    const H3_EDGE_KM = [1107.7, 418.7, 158.2, 59.8, 22.6, 8.54, 3.23, 1.22, 0.46];
+    function h3ResForZoom(fz) {
+        // Match the plane-grid apparent-size schedule (cells ~40-80 px,
+        // halving per zoom bucket): pick the first resolution whose edge
+        // is at or below the bucket's target.
+        const targetKm = 2349 / Math.pow(2, fz);
+        for (let r = 0; r < H3_EDGE_KM.length; r++) {
+            if (H3_EDGE_KM[r] <= targetKm * 1.4) return r;
+        }
+        return H3_EDGE_KM.length - 1;
+    }
+
+    // Pole-containing cells: the boundary loops all the way around in
+    // longitude, which no lng/lat ring can express directly — rebuild as
+    // the standard pole-wrapped band (sorted by lng, closed over the
+    // pole; the mercator data limit clips it at ±85.05° like every other
+    // polar polygon in this demo — same limitation, same look).
+    function h3PoleGeometry(ring, isNorth) {
+        const pts = ring.slice(0, -1)
+            .map(([lng, lat]) => [((lng % 360) + 540) % 360 - 180, lat])
+            .sort((a, b) => a[0] - b[0]);
+        const pole = isNorth ? 90 : -90;
+        return {type: 'Polygon', coordinates: [[
+            ...pts,
+            [180, pts[pts.length - 1][1]], [180, pole],
+            [-180, pole], [-180, pts[0][1]],
+            pts[0]
+        ]]};
+    }
+
+    async function buildH3Features() {
+        const sampler = await getLandSampler();
+        const zoom = map ? map.getZoom() : 1.4;
+        const fz = Math.floor(zoom);
+        const res = h3ResForZoom(fz);
+        let cells;
+        let x0 = 0, x1 = 1, y0 = EE.yNorth, y1 = EE.ySouth;
+        if (map && zoom > 3) {
+            const corners = [[0, 0], [map.getContainer().clientWidth, 0], [0, map.getContainer().clientHeight], [map.getContainer().clientWidth, map.getContainer().clientHeight]];
+            const lng0 = map.getCenter().lng;
+            const pts = corners.map(([px, py]) => {
+                const ll = map.unproject([px, py]);
+                let lng = ll.lng;
+                while (lng - lng0 > 180) lng -= 360;
+                while (lng - lng0 < -180) lng += 360;
+                return EE.forward(lng, ll.lat);
+            });
+            const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+            const mx = 0.3 * (Math.max(...xs) - Math.min(...xs));
+            const my = 0.3 * (Math.max(...ys) - Math.min(...ys));
+            x0 = Math.min(...xs) - mx; x1 = Math.max(...xs) + mx;
+            y0 = Math.max(EE.yNorth, Math.min(...ys) - my); y1 = Math.min(EE.ySouth, Math.max(...ys) + my);
+            // Cover the viewport with a grid disk around the center
+            // cell: coverage is computed in H3's own grid space, so the
+            // seam and the poles need no special casing at all.
+            const c = map.getCenter();
+            const centerCell = window.h3.latLngToCell(c.lat, c.lng, res);
+            const diagKm = Math.hypot(x1 - x0, y1 - y0) * 40075;
+            const k = Math.min(40, Math.ceil((diagKm * 0.55) / (1.5 * H3_EDGE_KM[res])) + 2);
+            cells = window.h3.gridDisk(centerCell, k);
+        } else {
+            cells = window.h3.getRes0Cells();
+            if (res > 0) cells = cells.flatMap((cell) => window.h3.cellToChildren(cell, res));
+        }
+        hexLastGen = {bucket: fz, pointy: hexPointy, h3: true, x0, x1, y0, y1, seam: null};
+        const features = [];
+        for (const cell of cells) {
+            const [clat, clng] = window.h3.cellToLatLng(cell);
+            const ctr = EE.forward(clng, clat);
+            // cellToBoundary(_, true) does NOT unwrap seam-crossing rings
+            // (mixed-sign lngs, verified against 4.3.0) — unwrap around
+            // the cell center, then the existing ±180 splitter applies
+            // unchanged.
+            const bnd = window.h3.cellToBoundary(cell, true);
+            const ring = bnd.map(([lng, lat]) => {
+                while (lng - clng > 180) lng -= 360;
+                while (lng - clng < -180) lng += 360;
+                return [lng, lat];
+            });
+            if (ring.length && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
+                ring.push(ring[0]);
+            }
+            // Land fraction: center + boundary vertices pulled 30%
+            // inward, sampled in the (wrapping) EE-plane land raster.
+            let hits = sampler(ctr.x, ctr.y), n = 1;
+            for (let i = 0; i < ring.length - 1; i++) {
+                const p = EE.forward(ring[i][0], ring[i][1]);
+                hits += sampler(ctr.x + 0.7 * (p.x - ctr.x), ctr.y + 0.7 * (p.y - ctr.y));
+                n++;
+            }
+            const lngs = ring.map(([lng]) => lng);
+            const poleCell = Math.max(...lngs) - Math.min(...lngs) > 270;
+            features.push({
+                type: 'Feature',
+                properties: {land: +(hits / n).toFixed(2), cell},
+                geometry: poleCell ? h3PoleGeometry(ring, clat > 0) : hexGeometry(ring)
+            });
+        }
+        return {type: 'FeatureCollection', features};
+    }
+
     async function buildHexbinFeatures() {
+        if (hexH3) return buildH3Features();
         const sampler = await getLandSampler();
         const zoom = map ? map.getZoom() : 1.4;
         // Cell size halves every zoom level (~41-82px apparent band),
@@ -1537,20 +1651,29 @@
         hexbinsCheckbox.checked = useHexbins;
         defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useTerrain && !useHexbins;
 
-        // Hexbin extras: pointy-top orientation sub-toggle + zoom-adaptive
+        // Hexbin extras: pointy-top / H3 sub-toggles + zoom-adaptive
         // regeneration (rebuild on zoom-bucket change or viewport move
         // beyond z3, throttled by moveend).
+        const hexH3Checkbox = document.getElementById('diag-hex-h3');
         hexPointyCheckbox.checked = hexPointy;
-        hexPointyCheckbox.disabled = !useHexbins;
+        hexPointyCheckbox.disabled = !useHexbins || hexH3;
+        hexH3Checkbox.checked = hexH3;
+        hexH3Checkbox.disabled = !useHexbins;
         hexPointyCheckbox.addEventListener('change', () => {
             hexPointy = hexPointyCheckbox.checked;
             setUrlParam('hexstyle', hexPointy ? 'pointy' : null);
             refreshHexbins().catch(console.error);
         });
+        hexH3Checkbox.addEventListener('change', () => {
+            hexH3 = hexH3Checkbox.checked;
+            hexPointyCheckbox.disabled = !hexbinsCheckbox.checked || hexH3;
+            setUrlParam('hexstyle', hexH3 ? 'h3' : (hexPointy ? 'pointy' : null));
+            refreshHexbins().catch(console.error);
+        });
         map.on('moveend', () => {
             if (!hexbinsCheckbox.checked || !hexLastGen) return;
             const bucket = Math.floor(map.getZoom());
-            let stale = bucket !== hexLastGen.bucket || hexPointy !== hexLastGen.pointy;
+            let stale = bucket !== hexLastGen.bucket || hexPointy !== hexLastGen.pointy || hexH3 !== !!hexLastGen.h3;
             if (!stale && map.getZoom() > 3) {
                 // Regen only when the view leaves the inner two-thirds of
                 // the generated region (hysteresis — the every-moveend
@@ -1606,7 +1729,8 @@
                 document.getElementById(LABEL_DATASETS[key].checkboxId).disabled = LABEL_DATASETS[key].mode !== activeMode;
             }
             graticuleCheckbox.disabled = demotilesCheckbox.checked;
-            hexPointyCheckbox.disabled = !hexbinsCheckbox.checked;
+            hexPointyCheckbox.disabled = !hexbinsCheckbox.checked || hexH3;
+            document.getElementById('diag-hex-h3').disabled = !hexbinsCheckbox.checked;
         }
         refreshLabelCheckboxEnablement();
         applyLabelVisibility();
