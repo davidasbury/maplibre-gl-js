@@ -133,6 +133,7 @@
     <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
     <div class="diag-toggle" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><label for="diag-graticule"><input type="checkbox" id="diag-graticule" disabled /> graticule</label></div>
     <div class="diag-toggle diag-sub" title="Graticule line labels (meridian/parallel degree values, line-following along bowing meridians). Overture mode only &mdash; that style carries the label layer."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> labels</label></div>
+    <div class="diag-toggle"><label for="diag-coast" title="Coastline polylines from the Overture water polygons (their boundaries), any data layer. Zoom generalization rides the Overture tile pyramid; a bespoke coastline build (OSM/Esri islands) would be preprocessed with Mapshaper (Visvalingam), not Douglas-Peucker."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-shade" title="Mapterhorn hillshade as a standalone blend layer over any data layer (decoupled from the imagery)."><input type="checkbox" id="diag-shade" disabled /> shade</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any data layer &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
     <div class="diag-section">data layers</div>
     <div class="diag-toggle" title="Local Natural Earth land polygons + graticule (network-free default)."><label for="diag-default"><input type="checkbox" id="diag-default" disabled /> default</label></div>
     <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp)."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
@@ -545,14 +546,19 @@
             const lngs = ring.map(([lng]) => lng);
             const poleCell = Math.max(...lngs) - Math.min(...lngs) > 270;
             const land = +(hits / n).toFixed(2);
+            // Coastline-crossing class (owner request, round 6): any
+            // disagreement among the samples means the cell straddles a
+            // coastline — a distinct class, not a color on the ramp, so
+            // it can carry its own styling and future data joins.
+            const props = {land, cell, coast: hits > 0 && hits < n};
             features.push({
                 type: 'Feature',
-                properties: {land, cell},
+                properties: props,
                 geometry: poleCell ? h3PoleGeometry(ring, clat > 0) : hexGeometry(ring)
             });
             features.push({
                 type: 'Feature',
-                properties: {land, cell},
+                properties: props,
                 geometry: h3EdgeLines(ring)
             });
         }
@@ -587,16 +593,30 @@
                     id: 'hexbins-fill', type: 'fill', source: 'hexbins',
                     filter: ['==', '$type', 'Polygon'],
                     paint: {
-                        // Subtle water -> land shade by land fraction.
-                        'fill-color': ['interpolate', ['linear'], ['get', 'land'],
-                            0, '#b8d3e6', 0.5, '#cbdcd2', 1, '#d3e3bd'],
+                        // Coastline-crossing cells are a distinct class
+                        // (warm sand, shaded by how much land they hold);
+                        // pure water / pure land keep the cool ramp.
+                        'fill-color': ['case', ['get', 'coast'],
+                            ['interpolate', ['linear'], ['get', 'land'],
+                                0, '#ead9a8', 1, '#dfcf96'],
+                            ['interpolate', ['linear'], ['get', 'land'],
+                                0, '#b8d3e6', 1, '#d3e3bd']],
                         'fill-opacity': 0.92
                     }
                 },
                 // Outlines come from the dedicated edge-line features
                 // (h3EdgeLines), NOT the polygon rings — the polygons'
-                // artificial ±180 clip edges must not be traced.
-                {id: 'hexbins-outline', type: 'line', source: 'hexbins', filter: ['==', '$type', 'LineString'], paint: {'line-color': '#ffffff', 'line-width': 0.8, 'line-opacity': 0.85}},
+                // artificial ±180 clip edges must not be traced. Coastal
+                // cells get a slightly stronger warm outline.
+                {
+                    id: 'hexbins-outline', type: 'line', source: 'hexbins',
+                    filter: ['==', '$type', 'LineString'],
+                    paint: {
+                        'line-color': ['case', ['get', 'coast'], '#c9b479', '#ffffff'],
+                        'line-width': ['case', ['get', 'coast'], 1.2, 0.8],
+                        'line-opacity': 0.85
+                    }
+                },
                 {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.5, 'line-opacity': 0.6}}
             ]
         };
@@ -1475,6 +1495,80 @@
     // re-apply the label sub-toggle visibilities, which live in layer
     // layout properties the incoming style just reset.
     let tissotOn = false;
+
+    // Cross-dataset overlays (owner request, round 6): coastline
+    // polylines, hillshade, and imagery as independent blend layers over
+    // ANY data layer — hillshade decoupled from the terrain mode's
+    // welded imagery. Each is injected into the live style and
+    // re-applied on style swaps below.
+    // - coast: the Overture water polygons' boundaries ARE the best
+    //   globally consistent coastline available to this page; drawing
+    //   them as lines complements and cross-validates the hexbin
+    //   coastline-crossing class. Zoom generalization rides the Overture
+    //   tile pyramid; if a bespoke coastline dataset (OSM-derived, Esri
+    //   islands) is ever built, preprocess with Mapshaper's Visvalingam
+    //   (weighted effective area) — not Douglas-Peucker (owner note,
+    //   github.com/mbloch/mapshaper).
+    // - shade/image reuse the terrain mode's source configs verbatim;
+    //   in terrain mode itself the overlay ids stay distinct, so
+    //   toggling there double-draws rather than fighting the mode's own
+    //   layers.
+    let coastOn = params.get('coast') === '1';
+    let shadeOn = params.get('shade') === '1';
+    let imageOn = params.get('image') === '1';
+    function applyExtraOverlays() {
+        if (!map.getStyle()) return;
+        const beforeGrat = map.getLayer('graticule') ? 'graticule' : undefined;
+        // Add bottom-up with the same anchor: image under shade under coast.
+        if (imageOn) {
+            if (!map.getSource('s2cloudless')) {
+                map.addSource('s2cloudless', {
+                    type: 'raster',
+                    tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg'],
+                    tileSize: 256, maxzoom: 14,
+                    attribution: 'Sentinel-2 cloudless by <a href="https://s2maps.eu">EOX</a>'
+                });
+            }
+            if (!map.getLayer('image-ov')) {
+                map.addLayer({id: 'image-ov', type: 'raster', source: 's2cloudless', paint: {'raster-opacity': 0.5}}, beforeGrat);
+            }
+        } else if (map.getLayer('image-ov')) {
+            map.removeLayer('image-ov');
+        }
+        if (shadeOn) {
+            if (!map.getSource('mapterhorn')) {
+                map.addSource('mapterhorn', {
+                    type: 'raster-dem',
+                    tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+                    tileSize: 512, encoding: 'terrarium', maxzoom: 12,
+                    attribution: '© Mapterhorn'
+                });
+            }
+            if (!map.getLayer('shade-ov')) {
+                map.addLayer({id: 'shade-ov', type: 'hillshade', source: 'mapterhorn', paint: {
+                    'hillshade-exaggeration': 0.5,
+                    'hillshade-shadow-color': '#47597a',
+                    'hillshade-highlight-color': '#fefaf2'
+                }}, beforeGrat);
+            }
+        } else if (map.getLayer('shade-ov')) {
+            map.removeLayer('shade-ov');
+        }
+        if (coastOn) {
+            ensurePmtilesProtocol();
+            if (!map.getSource('overture-base')) {
+                map.addSource('overture-base', {type: 'vector', url: overtureArchiveUrl('base')});
+            }
+            if (!map.getLayer('coast-ov')) {
+                map.addLayer({id: 'coast-ov', type: 'line', source: 'overture-base', 'source-layer': 'water', paint: {
+                    'line-color': '#33566e', 'line-width': 1.0, 'line-opacity': 0.9
+                }}, beforeGrat);
+            }
+        } else if (map.getLayer('coast-ov')) {
+            map.removeLayer('coast-ov');
+        }
+    }
+
     map.on('style.load', () => {
         if (tissotOn) addTissotOverlay();
         const transform = mapTransform();
@@ -1484,6 +1578,7 @@
         }
         applyLabelVisibility();
         applyGraticuleVisibility();
+        applyExtraOverlays();
     });
 
     // Mode toggles write themselves back into the URL (replaceState, no
@@ -1520,6 +1615,23 @@
             else removeTissotOverlay();
             setUrlParam('tissot', tissotOn ? '1' : null);
         });
+
+        // Cross-dataset overlays: coast / shade / image (one shared row).
+        for (const [id, param, get, set] of [
+            ['diag-coast', 'coast', () => coastOn, (v) => { coastOn = v; }],
+            ['diag-shade', 'shade', () => shadeOn, (v) => { shadeOn = v; }],
+            ['diag-image', 'image', () => imageOn, (v) => { imageOn = v; }]
+        ]) {
+            const box = document.getElementById(id);
+            box.disabled = false;
+            box.checked = get();
+            box.addEventListener('change', () => {
+                set(box.checked);
+                setUrlParam(param, box.checked ? '1' : null);
+                applyExtraOverlays();
+            });
+        }
+        applyExtraOverlays();
 
         clipCheckbox.disabled = false;
         clipCheckbox.checked = useClip;
