@@ -271,7 +271,7 @@
     let landSampler = null;
     async function getLandSampler() {
         if (landSampler) return landSampler;
-        const land = await (await fetch('../bench/data/naturalearth-land.json')).json();
+        const land = await getLandData();
         const W = 2048, H = 1024;
         const canvas = document.createElement('canvas');
         canvas.width = W; canvas.height = H;
@@ -300,28 +300,58 @@
         }
         const data = ctx.getImageData(0, 0, W, H).data;
         landSampler = (x, y) => {
-            const px = Math.max(0, Math.min(W - 1, Math.round(x * W)));
+            const xWrapped = ((x % 1) + 1) % 1; // seam-straddling cells sample the wrapped world
+            const px = Math.max(0, Math.min(W - 1, Math.round(xWrapped * W)));
             const py = Math.max(0, Math.min(H - 1, Math.round((y - EE.yNorth) / (EE.ySouth - EE.yNorth) * H)));
             return data[(py * W + px) << 2] > 127 ? 1 : 0;
         };
         return landSampler;
     }
 
-    // Hex grid over an EE-plane bbox. R = circumradius in unit-world units.
+    // Hex grid over an EE-plane bbox, SEAM-PERIODIC: R is quantized so the
+    // world width (1 unit) is an exact number of horizontal grid periods —
+    // flat-top period 3R (two columns), pointy-top period sqrt(3)R — so
+    // the tiling matches itself across the ±180 seam exactly
+    // (owner-reported misalignment with the unquantized first cut). Cells
+    // are keyed by canonical (column mod world, row) to dedupe overhang
+    // copies; ring geometry keeps the local unwrapped position so
+    // seam-straddling cells render into the adjacent world copy.
+    function quantizedHexR(targetR, pointy) {
+        const period = pointy ? Math.sqrt(3) * targetR : 3 * targetR;
+        const n = Math.max(1, Math.round(1 / period));
+        return pointy ? 1 / (Math.sqrt(3) * n) : 1 / (3 * n);
+    }
+
     function hexCenters(R, x0, x1, y0, y1, pointy) {
         const centers = [];
-        // flat-top: column pitch 1.5R, row pitch sqrt(3)R, odd columns
-        // offset half a row. pointy-top: transpose.
+        const seen = new Set();
         const a = 1.5 * R, b = Math.sqrt(3) * R;
+        const push = (x, y, colKey, rowKey) => {
+            const key = colKey + ':' + rowKey;
+            if (seen.has(key)) return;
+            seen.add(key);
+            centers.push([x, y]);
+        };
         if (!pointy) {
-            for (let col = Math.floor(x0 / a) - 1, x = col * a; x <= x1 + a; col++, x = col * a) {
+            const worldCols = Math.round(1 / a); // integer by quantization (2n columns)
+            for (let col = Math.floor(x0 / a) - 1; col * a <= x1 + a; col++) {
+                const x = col * a;
                 const yOff = (col & 1) ? b / 2 : 0;
-                for (let y = Math.floor((y0 - yOff) / b) * b + yOff; y <= y1 + b; y += b) centers.push([x, y]);
+                const canonicalCol = ((col % worldCols) + worldCols) % worldCols;
+                for (let y = Math.floor((y0 - yOff) / b) * b + yOff; y <= y1 + b; y += b) {
+                    push(x, y, canonicalCol, Math.round((y - yOff) / b) + ((col & 1) ? '.5' : ''));
+                }
             }
         } else {
-            for (let row = Math.floor(y0 / a) - 1, y = row * a; y <= y1 + a; row++, y = row * a) {
+            const worldCols = Math.round(1 / b);
+            for (let row = Math.floor(y0 / a) - 1; row * a <= y1 + a; row++) {
+                const y = row * a;
                 const xOff = (row & 1) ? b / 2 : 0;
-                for (let x = Math.floor((x0 - xOff) / b) * b + xOff; x <= x1 + b; x += b) centers.push([x, y]);
+                for (let x = Math.floor((x0 - xOff) / b) * b + xOff; x <= x1 + b; x += b) {
+                    const col = Math.round((x - xOff) / b);
+                    const canonicalCol = ((col % worldCols) + worldCols) % worldCols;
+                    push(x, y, canonicalCol + ((row & 1) ? '.5' : ''), row);
+                }
             }
         }
         return centers;
@@ -338,33 +368,37 @@
         return ring;
     }
 
+    let hexLastGen = null; // {bucket, pointy, x0, x1, y0, y1} — regen hysteresis
+
     async function buildHexbinFeatures() {
         const sampler = await getLandSampler();
         const zoom = map ? map.getZoom() : 1.4;
-        // Cell size halves every zoom level, keeping the apparent size in
-        // a ~41-82px band (the world doubles per level; an every-2-levels
-        // schedule made cells GROW on screen - caught by the z5 check).
-        const R = 0.04 / Math.pow(2, Math.floor(zoom));
-        // Beyond z3, generate only for the visible EE bbox (+1 cell margin).
+        // Cell size halves every zoom level (~41-82px apparent band),
+        // quantized so the grid tiles the world seam-exactly.
+        const R = quantizedHexR(0.04 / Math.pow(2, Math.floor(zoom)), hexPointy);
+        // Beyond z3, generate only for the visible EE bbox (+margin). The
+        // frame is ABSOLUTE (cells are fixed to the earth): the first cut
+        // subtracted lambda0 from corner longitudes and would have built
+        // cells around Greenwich regardless of where the view was.
         let x0 = 0, x1 = 1, y0 = EE.yNorth, y1 = EE.ySouth;
         if (map && zoom > 3) {
             const corners = [[0, 0], [map.getContainer().clientWidth, 0], [0, map.getContainer().clientHeight], [map.getContainer().clientWidth, map.getContainer().clientHeight]];
             const lng0 = map.getCenter().lng;
             const pts = corners.map(([px, py]) => {
                 const ll = map.unproject([px, py]);
-                return EE.forward(ll.lng - lng0, ll.lat);
+                // unwrap around the view center so the bbox is continuous
+                let lng = ll.lng;
+                while (lng - lng0 > 180) lng -= 360;
+                while (lng - lng0 < -180) lng += 360;
+                return EE.forward(lng, ll.lat);
             });
             const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-            // note: forward() above used lng relative to lambda0, matching
-            // the lambda0=0 grid frame the cells are generated in.
-            // Generous margin: proportional to the visible span, not just
-            // the cell size (a 3R margin under-covered ~25% of the frame
-            // at z5 - visible as an empty band on first regen).
-            const mx = Math.max(3 * R, 0.2 * (Math.max(...xs) - Math.min(...xs)));
-            const my = Math.max(3 * R, 0.2 * (Math.max(...ys) - Math.min(...ys)));
+            const mx = Math.max(3 * R, 0.3 * (Math.max(...xs) - Math.min(...xs)));
+            const my = Math.max(3 * R, 0.3 * (Math.max(...ys) - Math.min(...ys)));
             x0 = Math.min(...xs) - mx; x1 = Math.max(...xs) + mx;
             y0 = Math.max(EE.yNorth, Math.min(...ys) - my); y1 = Math.min(EE.ySouth, Math.max(...ys) + my);
         }
+        hexLastGen = {bucket: Math.floor(zoom), pointy: hexPointy, x0, x1, y0, y1};
         const features = [];
         for (const [cx, cy] of hexCenters(R, x0, x1, y0, y1, hexPointy)) {
             if (cy < EE.yNorth - R / 2 || cy > EE.ySouth + R / 2) continue;
@@ -530,7 +564,7 @@
     }
 
     async function buildChoroplethSource() {
-        const land = await (await fetch('../bench/data/naturalearth-land.json')).json();
+        const land = await getLandFillData();
         return {
             type: 'FeatureCollection',
             features: land.features.map((feature) => ({...feature, properties: {...feature.properties, bucket: hashFeature(feature) % 5, area: featureArea(feature)}}))
@@ -640,6 +674,87 @@
     }
     const polarCaps = {type: 'FeatureCollection', features: [polarCapFeature(true), polarCapFeature(false)]};
 
+    // Local land data below the mercator limit is the source of tile-
+    // aligned fill notches in the Antarctic strip (owner-reported): the
+    // Natural Earth ring runs to lat -89.999, which lies BEYOND mercator
+    // tile space (merc-y ~1.23), and per-tile ring closure at the last
+    // tile row fails in some tiles. Clamp all vertices to the mercator
+    // range and let the polar caps (land-colored) paint the pole band
+    // seamlessly - the same treatment every mercator-cut mode gets.
+    function clampToMercatorRange(geojson) {
+        const clampRing = (ring) => ring.map(([lng, lat]) => [lng, Math.max(-MERCATOR_DATA_LIMIT, Math.min(MERCATOR_DATA_LIMIT, lat))]);
+        return {
+            ...geojson,
+            features: geojson.features.map((f) => {
+                const g = f.geometry;
+                if (g.type === 'Polygon') return {...f, geometry: {...g, coordinates: g.coordinates.map(clampRing)}};
+                if (g.type === 'MultiPolygon') return {...f, geometry: {...g, coordinates: g.coordinates.map((p) => p.map(clampRing))}};
+                return f;
+            })
+        };
+    }
+
+    // Antimeridian-touching rings (Natural Earth's Antarctica traverses
+    // the +-180 edges and the -89.99 bottom) break fill rendering — in
+    // STOCK MapLibre mercator too (verified 2026-07-23 against 5.6.0:
+    // giant diagonal slashes; upstream repro candidate). Fix: split such
+    // polygons at lng 0 into two simple hemispheric pieces
+    // (Sutherland–Hodgman against the lng<=0 / lng>=0 half-planes).
+    // Fills use the split data; coastLINES come from the unsplit data so
+    // no artificial Greenwich seam is drawn.
+    function clipRingToHalfPlane(ring, keepWest) {
+        const inside = ([lng]) => keepWest ? lng <= 0 : lng >= 0;
+        const intersect = (a, b) => {
+            const t = (0 - a[0]) / (b[0] - a[0]);
+            return [0, a[1] + t * (b[1] - a[1])];
+        };
+        const out = [];
+        for (let i = 0; i < ring.length - 1; i++) {
+            const cur = ring[i], next = ring[i + 1];
+            if (inside(cur)) {
+                out.push(cur);
+                if (!inside(next)) out.push(intersect(cur, next));
+            } else if (inside(next)) {
+                out.push(intersect(cur, next));
+            }
+        }
+        if (out.length >= 3) out.push(out[0]);
+        return out.length >= 4 ? out : null;
+    }
+
+    function splitAntimeridianTouching(geojson) {
+        const touchesAM = (rings) => rings.some((ring) => ring.some(([lng]) => Math.abs(lng) >= 179.99));
+        return {
+            ...geojson,
+            features: geojson.features.map((f) => {
+                const g = f.geometry;
+                const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : null;
+                if (!polys || !polys.some(touchesAM)) return f;
+                const pieces = [];
+                for (const rings of polys) {
+                    for (const keepWest of [true, false]) {
+                        const clipped = rings.map((ring) => clipRingToHalfPlane(ring, keepWest)).filter(Boolean);
+                        if (clipped.length) pieces.push(clipped);
+                    }
+                }
+                return {...f, geometry: {type: 'MultiPolygon', coordinates: pieces}};
+            })
+        };
+    }
+
+    let landDataPromise = null;
+    function getLandData() {
+        if (!landDataPromise) {
+            landDataPromise = fetch('../bench/data/naturalearth-land.json')
+                .then((r) => r.json())
+                .then(clampToMercatorRange);
+        }
+        return landDataPromise;
+    }
+    function getLandFillData() {
+        return getLandData().then(splitAntimeridianTouching);
+    }
+
     function polarCapLayers(southColor, northColor) {
         return [
             {id: 'polar-cap-south', type: 'fill', source: 'polar-caps', filter: ['==', ['get', 'cap'], 'south'], paint: {'fill-color': southColor}},
@@ -702,16 +817,22 @@
         return choroplethSourceData;
     }
 
-    function buildLandStyle() {
+    async function buildLandStyle() {
         return {
             version: 8,
             projection: {type: 'equal-earth'},
             sources: {
                 land: {
                     type: 'geojson',
-                    data: '../bench/data/naturalearth-land.json',
+                    data: await getLandFillData(),
                     ...srcMaxOpt
                 },
+                'land-lines': {
+                    type: 'geojson',
+                    data: await getLandData(),
+                    ...srcMaxOpt
+                },
+                'polar-caps': {type: 'geojson', data: polarCaps},
                 graticule: {
                     type: 'geojson',
                     data: graticule,
@@ -720,7 +841,9 @@
             },
             layers: [
                 {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
-                {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8', 'fill-outline-color': '#6b8f5a'}},
+                ...polarCapLayers('#d8e8c8', '#a4c8e1'),
+                {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8'}},
+                {id: 'land-coast', type: 'line', source: 'land-lines', paint: {'line-color': '#6b8f5a', 'line-width': 0.7}},
                 {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
             ]
         };
@@ -735,6 +858,7 @@
                     type: 'geojson',
                     data: await getChoroplethSourceData()
                 },
+                'polar-caps': {type: 'geojson', data: polarCaps},
                 graticule: {
                     type: 'geojson',
                     data: graticule
@@ -742,6 +866,7 @@
             },
             layers: [
                 {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                ...polarCapLayers('#d8e8c8', '#a4c8e1'),
                 {
                     id: 'choropleth-fill',
                     type: 'fill',
@@ -980,13 +1105,23 @@
                     url: 'pmtiles://https://demotiles.maplibre.org/pmtiles/raster/watercolor.pmtiles',
                     tileSize: 512
                 },
+                // Global Sentinel-2 cloudless imagery (EOX; CORS reflects
+                // the origin — verified). WMTS path order is z/y/x.
+                s2cloudless: {
+                    type: 'raster',
+                    tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg'],
+                    tileSize: 256,
+                    maxzoom: 14,
+                    attribution: 'Sentinel-2 cloudless by <a href="https://s2maps.eu">EOX</a>'
+                },
                 'polar-caps': {type: 'geojson', data: polarCaps},
                 graticule: {type: 'geojson', data: graticule}
             },
             layers: [
                 {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
                 ...polarCapLayers('#e8ecef', '#a4c8e1'),
-                {id: 'watercolor', type: 'raster', source: 'watercolor', paint: {'raster-opacity': 0.9}},
+                {id: 's2-imagery', type: 'raster', source: 's2cloudless', paint: {'raster-opacity': 0.9}},
+                {id: 'watercolor', type: 'raster', source: 'watercolor', minzoom: 5, paint: {'raster-opacity': 0.9}},
                 {id: 'hillshade', type: 'hillshade', source: 'mapterhorn', paint: {
                     'hillshade-exaggeration': 0.5,
                     'hillshade-shadow-color': '#47597a',
@@ -1003,7 +1138,7 @@
         else if (mode === 'overture') map.setStyle(buildOvertureStyle());
         else if (mode === 'demotiles') map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
         else if (mode === 'choropleth') map.setStyle(await buildChoroplethStyle());
-        else map.setStyle(buildLandStyle());
+        else map.setStyle(await buildLandStyle());
     }
 
     // `transformStyle` is a `setStyle()` option, not a Map constructor
@@ -1291,14 +1426,20 @@
             setUrlParam('hexstyle', hexPointy ? 'pointy' : null);
             refreshHexbins().catch(console.error);
         });
-        let lastHexZoomBucket = Math.floor(map.getZoom() / 2);
         map.on('moveend', () => {
-            if (!hexbinsCheckbox.checked) return;
+            if (!hexbinsCheckbox.checked || !hexLastGen) return;
             const bucket = Math.floor(map.getZoom());
-            if (bucket !== lastHexZoomBucket || map.getZoom() > 3) {
-                lastHexZoomBucket = bucket;
-                refreshHexbins().catch(console.error);
+            let stale = bucket !== hexLastGen.bucket || hexPointy !== hexLastGen.pointy;
+            if (!stale && map.getZoom() > 3) {
+                // Regen only when the view leaves the inner two-thirds of
+                // the generated region (hysteresis — the every-moveend
+                // first cut made cells visibly pop on each pan).
+                const c = map.getCenter();
+                const p = EE.forward(c.lng, c.lat);
+                const inX = (hexLastGen.x1 - hexLastGen.x0) / 6, inY = (hexLastGen.y1 - hexLastGen.y0) / 6;
+                stale = p.x < hexLastGen.x0 + inX || p.x > hexLastGen.x1 - inX || p.y < hexLastGen.y0 + inY || p.y > hexLastGen.y1 - inY;
             }
+            if (stale) refreshHexbins().catch(console.error);
         });
 
         // Graticule lines overlay: enabled wherever the current style has
