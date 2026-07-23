@@ -141,6 +141,7 @@
     <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
     <div class="diag-toggle diag-sub" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
     <div class="diag-toggle diag-sub" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
+    <div class="diag-toggle" title="Global Mapterhorn terrarium DEM driving a hillshade layer, blended over the demotiles watercolor PMTiles archive (Innsbruck region &mdash; the CORS-open mirror of the Cooper Hewitt watercolor tiles). Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
 <script type="module">
@@ -201,6 +202,14 @@
     // archive's header, so past z13 the source overzooms -- exactly the
     // provider-v2 stress this mode exists to exercise.
     const useOverture = params.get('source') === 'overture';
+
+    // Terrain/hillshade attempt (owner request, 2026-07-23): global
+    // Mapterhorn terrarium DEM (hosted XYZ, CORS-open) driving a hillshade
+    // layer, blended over the demotiles watercolor PMTiles archive
+    // (Innsbruck region, maxzoom 11). The Cooper Hewitt global watercolor
+    // endpoint serves NO CORS headers and is browser-blocked from this
+    // origin — the demotiles archive is its usable regional mirror.
+    const useTerrain = params.get('source') === 'terrain';
 
     // Step 7: `?choropleth=1` swaps the flat land fill for a bucketed
     // choropleth layered over the same local style (background + graticule
@@ -572,7 +581,7 @@
         return `pmtiles://https://overturemaps-extras-us-west-2.s3.amazonaws.com/tiles/${OVERTURE_RELEASE}/${theme}.pmtiles`;
     }
     let pmtilesProtocolRegistered = false;
-    function buildOvertureStyle() {
+    function ensurePmtilesProtocol() {
         if (!pmtilesProtocolRegistered) {
             // In-flight request dedupe around the pmtiles protocol. The
             // provider's world copies are distinct tile keys to MapLibre
@@ -637,6 +646,10 @@
             });
             pmtilesProtocolRegistered = true;
         }
+    }
+
+    function buildOvertureStyle() {
+        ensurePmtilesProtocol();
         return {
             version: 8,
             projection: {type: 'equal-earth'},
@@ -737,8 +750,45 @@
         };
     }
 
-    async function applyStyle(demotiles, choropleth, overture) {
-        if (overture) map.setStyle(buildOvertureStyle());
+    function buildTerrainStyle() {
+        ensurePmtilesProtocol();
+        return {
+            version: 8,
+            projection: {type: 'equal-earth'},
+            sources: {
+                mapterhorn: {
+                    type: 'raster-dem',
+                    tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+                    tileSize: 512,
+                    encoding: 'terrarium',
+                    maxzoom: 12,
+                    attribution: '© Mapterhorn'
+                },
+                watercolor: {
+                    type: 'raster',
+                    url: 'pmtiles://https://demotiles.maplibre.org/pmtiles/raster/watercolor.pmtiles',
+                    tileSize: 512
+                },
+                'polar-caps': {type: 'geojson', data: polarCaps},
+                graticule: {type: 'geojson', data: graticule}
+            },
+            layers: [
+                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                ...polarCapLayers('#e8ecef', '#a4c8e1'),
+                {id: 'watercolor', type: 'raster', source: 'watercolor', paint: {'raster-opacity': 0.9}},
+                {id: 'hillshade', type: 'hillshade', source: 'mapterhorn', paint: {
+                    'hillshade-exaggeration': 0.5,
+                    'hillshade-shadow-color': '#47597a',
+                    'hillshade-highlight-color': '#fefaf2'
+                }},
+                {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
+            ]
+        };
+    }
+
+    async function applyStyle(demotiles, choropleth, overture, terrain) {
+        if (terrain) map.setStyle(buildTerrainStyle());
+        else if (overture) map.setStyle(buildOvertureStyle());
         else if (demotiles) map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
         else if (choropleth) map.setStyle(await buildChoroplethStyle());
         else map.setStyle(buildLandStyle());
@@ -759,7 +809,7 @@
         center: [centerLng, centerLat],
         zoom
     });
-    await applyStyle(useDemotiles, useChoropleth, useOverture);
+    await applyStyle(useDemotiles, useChoropleth, useOverture, useTerrain);
     window.map = map;
 
     // Tissot mode wiring: source + 3 layers, added/removed through these two
@@ -951,6 +1001,7 @@
         const choroplethCheckbox = document.getElementById('diag-choropleth');
         const demotilesCheckbox = document.getElementById('diag-demotiles');
         const overtureCheckbox = document.getElementById('diag-overture');
+        const terrainCheckbox = document.getElementById('diag-terrain');
 
         tissotCheckbox.disabled = false;
         tissotCheckbox.checked = useTissot;
@@ -1006,10 +1057,12 @@
         choroplethCheckbox.disabled = false;
         demotilesCheckbox.disabled = false;
         overtureCheckbox.disabled = false;
-        choroplethCheckbox.checked = useChoropleth && !useDemotiles && !useOverture;
+        terrainCheckbox.disabled = false;
+        choroplethCheckbox.checked = useChoropleth && !useDemotiles && !useOverture && !useTerrain;
         demotilesCheckbox.checked = useDemotiles;
         overtureCheckbox.checked = useOverture;
-        defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture;
+        terrainCheckbox.checked = useTerrain;
+        defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useTerrain;
 
         // Graticule lines overlay: enabled wherever the current style has
         // the layer (all local styles + overture; not demotiles).
@@ -1045,14 +1098,14 @@
         applyLabelVisibility();
 
         function refreshStyleFromCheckboxes() {
-            applyStyle(demotilesCheckbox.checked, choroplethCheckbox.checked, overtureCheckbox.checked).catch(console.error);
+            applyStyle(demotilesCheckbox.checked, choroplethCheckbox.checked, overtureCheckbox.checked, terrainCheckbox.checked).catch(console.error);
             refreshLabelCheckboxEnablement();
-            setUrlParam('source', overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null);
+            setUrlParam('source', terrainCheckbox.checked ? 'terrain' : overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null);
             setUrlParam('choropleth', choroplethCheckbox.checked ? '1' : null);
         }
         // Radio-group behavior: checking any data layer unchecks the rest;
         // unchecking the active one directly falls back to "default".
-        const dataLayerCheckboxes = [defaultCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox];
+        const dataLayerCheckboxes = [defaultCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, terrainCheckbox];
         for (const checkbox of dataLayerCheckboxes) {
             checkbox.addEventListener('change', () => {
                 if (checkbox.checked) {
