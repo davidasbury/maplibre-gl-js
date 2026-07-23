@@ -229,16 +229,18 @@
     const useHexbins = params.get('source') === 'hexbins';
 
     // ---- Stage C adaptive blend (plan step 11, 2026-07-23) --------------
-    // `?adaptive=1`: the projection becomes the zoom-interpolated
-    // expression — pure Equal Earth below z4, pure mercator above z6,
-    // positional morph between (the panel's "proj ratio" row reads the
-    // live transition state; it was built waiting for this day). The
-    // engine antimeridian clip stays off in this mode: the seam mask is
-    // drawn from the pure-EE outline and would clip mid-morph content.
+    // `?adaptive=1`: the projection becomes the named `equal-earth-adaptive`
+    // preset (factory default z4/z6 stops, step 12) — pure Equal Earth
+    // below z4, pure mercator above z6, positional morph between (the
+    // panel's "proj ratio" row reads the live transition state; it was
+    // built waiting for this day). The engine antimeridian clip stays off
+    // in this mode: the seam mask is drawn from the pure-EE outline and
+    // would clip mid-morph content. Off by default — it's mutually
+    // exclusive with the clip=1 default (the demo's face, owner request).
     const useAdaptive = params.get('adaptive') === '1';
     function projectionSpec() {
         return useAdaptive
-            ? {type: ['interpolate', ['linear'], ['zoom'], 4, 'equal-earth', 6, 'mercator']}
+            ? {type: 'equal-earth-adaptive'}
             : {type: 'equal-earth'};
     }
 
@@ -685,11 +687,11 @@
     // while clip mode is on.
     const useEngineClip = params.get('engineclip') !== '0';
 
-    // Graticule lines overlay toggle (owner request, 2026-07-22 panel
-    // restructure): default on, `?grat=0` opts out. Applies to the
-    // 'graticule' line layer wherever the current style carries it
-    // (demotiles does not — its remote style has no graticule source).
-    let graticuleOn = params.get('grat') !== '0';
+    // Graticule lines overlay toggle (owner request, 2026-07-23 defaults
+    // pass): default OFF, `?grat=1` opts in. Applies to the 'graticule'
+    // line layer wherever the current style carries it (demotiles does
+    // not — its remote style has no graticule source).
+    let graticuleOn = params.get('grat') === '1';
 
     function applyGraticuleVisibility() {
         if (map.getLayer('graticule')) {
@@ -1833,7 +1835,7 @@
         graticuleCheckbox.addEventListener('change', () => {
             graticuleOn = graticuleCheckbox.checked;
             applyGraticuleVisibility();
-            setUrlParam('grat', graticuleOn ? null : '0');
+            setUrlParam('grat', graticuleOn ? '1' : null);
         });
         applyGraticuleVisibility();
 
