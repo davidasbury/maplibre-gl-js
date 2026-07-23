@@ -78,7 +78,26 @@ const OUTLINE_FIT_MARGIN = 0.94;
  */
 const EE_CAMERA_CLAMP_WARNING = 'equal-earth projection: bearing, pitch and roll are not supported and are clamped to 0.';
 
-const EE_LINEARIZED_MIN_OVERSCALED_Z = 13;
+/**
+ * Lowered 13 → 7 (ghost round 3, 2026-07-23): the residual criterion below
+ * is self-limiting — it admits tiles exactly when the linearized path is
+ * sub-0.05px accurate (from roughly display z7 for native tiles) — so the
+ * fixed floor was pure conservatism, and it turned out to be the mechanism
+ * behind the owner's Haswell "ghost" displacement: raster sources pinned at
+ * their maxzoom never reparse overscaled tiles, so their overscaledZ never
+ * reached 13 and they stayed on the polynomial path at EVERY display zoom,
+ * while 256px sources crossed to the linearized path a full display-zoom
+ * before 512px ones. Any frame mixing the two paths displaces layer groups
+ * relative to each other by the polynomial path's absolute f32 error —
+ * sub-pixel on strong ALUs (invisible), whole pixels on Haswell-class GPUs
+ * (the photographed ghosts). With the floor at 7, every eligible tile in a
+ * frame uses the same f32-exact path; the polynomial path remains for
+ * world views (where its error is far sub-pixel) and pole-row tiles
+ * (excluded below; they carry pole-sentinel vertices only the polynomial
+ * path understands — the one remaining mixed-path seam, at the pole rows
+ * of z7+ views, is noted in the ghost round-3 record).
+ */
+const EE_LINEARIZED_MIN_OVERSCALED_Z = 7;
 const EE_LINEARIZED_MAX_RESIDUAL_PX = 0.05;
 
 type EqualEarthLinearizedTileData = {

@@ -567,11 +567,36 @@ describe('EqualEarthTransform', () => {
             expect(maxErrorPx).toBeLessThan(0.05);
         });
 
-        test('low zoom stays on the polynomial path', () => {
+        test('low zoom stays on the polynomial path (residual criterion self-limits)', () => {
+            // Ghost round 3 (2026-07-23): the fixed z13 floor dropped to 7 —
+            // the residual criterion is the real boundary. A z4 tile at a z4
+            // view has span³·worldSize ≈ 2 px >> 0.05, so it must stay
+            // polynomial; a z8 tile at a z8 view (~0.008 px) now linearizes
+            // (previously pinned polynomial — that pin was the conservative
+            // floor, and the floor was the Haswell mixed-path ghost mechanism).
+            const transform = createTransform(4, new LngLat(30, 50));
+            const tileID = tileContaining(30, 50, 4, 4);
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            expect(data.tileMercatorCoords[2]).toBeGreaterThan(0);
+        });
+
+        test('mid zoom now linearizes (ghost round 3: path consistency from ~z7)', () => {
             const transform = createTransform(8, new LngLat(30, 50));
             const tileID = tileContaining(30, 50, 8, 8);
             const data = transform.getProjectionData({overscaledTileID: tileID});
-            expect(data.tileMercatorCoords[2]).toBeGreaterThan(0);
+            expect(data.tileMercatorCoords[2]).toBe(0); // linearized sentinel
+        });
+
+        test('maxzoom-pinned overzoomed raster tiles linearize too (the Haswell ghost fix)', () => {
+            // A canonical-z12 tile rendered at a z13.5 view (Mapterhorn
+            // beyond maxzoom never reparses, so overscaledZ stays 12 —
+            // under the old z13 floor this tile was pinned to the
+            // polynomial path forever while 256px imagery linearized,
+            // displacing layer groups on weak-ALU GPUs).
+            const transform = createTransform(13.5, new LngLat(-122.22, 37.76));
+            const tileID = tileContaining(-122.22, 37.76, 12, 12);
+            const data = transform.getProjectionData({overscaledTileID: tileID});
+            expect(data.tileMercatorCoords[2]).toBe(0); // linearized sentinel
         });
 
         test('pole-row tiles stay on the polynomial path (sentinel vertices)', () => {
