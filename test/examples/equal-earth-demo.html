@@ -128,7 +128,7 @@
     <div>proj ratio: <span id="diag-blend">&ndash;</span> <span style="opacity:.6">(EE=1)</span></div>
     <div><span id="diag-tiles">tiles loading&hellip;</span> <span id="diag-tiles-glyph">&#9676;</span></div>
     <div id="diag-gl-row" hidden>gl: <span id="diag-gl">&ndash;</span></div>
-    <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Engine seam-bit stencil clip by default; ?engineclip=0 falls back to the page canvas mask. Also relaxes the zoom floor from pole-fit to outline-fit."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label></div>
+    <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Engine seam-bit stencil clip by default; ?engineclip=0 falls back to the page canvas mask. Also relaxes the zoom floor from pole-fit to outline-fit."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label> <label for="diag-adaptive" title="Stage C: zoom-adaptive projection — Equal Earth below z4, mercator above z6, positional morph between. Disables the antimeridian clip (the seam mask is a pure-EE construct). Reload applies."><input type="checkbox" id="diag-adaptive" disabled /> adaptive</label></div>
     <div class="diag-section">overlays</div>
     <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
     <div class="diag-toggle" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><label for="diag-graticule"><input type="checkbox" id="diag-graticule" disabled /> graticule</label></div>
@@ -227,6 +227,20 @@
     // Earth EE-plane raster elsewhere. Resolution adapts to zoom;
     // generation is limited to the viewport (+margin) beyond z3.
     const useHexbins = params.get('source') === 'hexbins';
+
+    // ---- Stage C adaptive blend (plan step 11, 2026-07-23) --------------
+    // `?adaptive=1`: the projection becomes the zoom-interpolated
+    // expression — pure Equal Earth below z4, pure mercator above z6,
+    // positional morph between (the panel's "proj ratio" row reads the
+    // live transition state; it was built waiting for this day). The
+    // engine antimeridian clip stays off in this mode: the seam mask is
+    // drawn from the pure-EE outline and would clip mid-morph content.
+    const useAdaptive = params.get('adaptive') === '1';
+    function projectionSpec() {
+        return useAdaptive
+            ? {type: ['interpolate', ['linear'], ['zoom'], 4, 'equal-earth', 6, 'mercator']}
+            : {type: 'equal-earth'};
+    }
 
     // Minimal EE forward/inverse for page-side grid math — mirrors
     // src/geo/equal_earth_coordinate.ts (values must match; the engine
@@ -575,7 +589,7 @@
         ensurePmtilesProtocol(); // the overture-base source below is pmtiles://
         return {
             version: 8,
-            projection: {type: 'equal-earth'},
+            projection: projectionSpec(),
             sources: {
                 hexbins: {type: 'geojson', data: await buildHexbinFeatures()},
                 // Loaded (invisibly) for its water polygons: the
@@ -658,7 +672,10 @@
     // when unchecked / removes the param when checked. `?clip=1` still
     // parses as on for old copied URLs. Headless gates that exercise
     // unclipped behavior pin clip=0 explicitly.
-    const useClip = params.get('clip') !== '0';
+    // Clip is force-disabled in adaptive mode: the seam mask is a pure-EE
+    // construct and would clip mid-morph content (and the adaptive
+    // transform doesn't carry the EE-only clip flags).
+    const useClip = params.get('clip') !== '0' && !useAdaptive;
 
     // Engine seam-bit stencil clip is the DEFAULT since 2026-07-22 (owner
     // approved after the session-0030 fixes); `?engineclip=0` falls back to
@@ -991,7 +1008,7 @@
     async function buildLandStyle() {
         return {
             version: 8,
-            projection: {type: 'equal-earth'},
+            projection: projectionSpec(),
             sources: {
                 land: {
                     type: 'geojson',
@@ -1023,7 +1040,7 @@
     async function buildChoroplethStyle() {
         return {
             version: 8,
-            projection: {type: 'equal-earth'},
+            projection: projectionSpec(),
             sources: {
                 choropleth: {
                     type: 'geojson',
@@ -1069,7 +1086,7 @@
             layers.splice(backgroundIndex, 0, ...polarCapLayers('#ffffff', ocean));
             return {
                 ...next,
-                projection: {type: 'equal-earth'},
+                projection: projectionSpec(),
                 sources: {...next.sources, 'polar-caps': {type: 'geojson', data: polarCaps}},
                 layers
             };
@@ -1159,7 +1176,7 @@
         ensurePmtilesProtocol();
         return {
             version: 8,
-            projection: {type: 'equal-earth'},
+            projection: projectionSpec(),
             // No `glyphs` URL anywhere in this style, deliberately: this
             // MapLibre version draws glyphs locally via TinySDF whenever the
             // style has no glyph server (glyph_manager.ts), so labels here
@@ -1261,7 +1278,7 @@
         ensurePmtilesProtocol();
         return {
             version: 8,
-            projection: {type: 'equal-earth'},
+            projection: projectionSpec(),
             sources: {
                 mapterhorn: {
                     type: 'raster-dem',
@@ -1658,6 +1675,24 @@
             else removeTissotOverlay();
             setUrlParam('tissot', tissotOn ? '1' : null);
         });
+
+        // Stage C adaptive blend: a reload-applying mode toggle (the
+        // projection is a style-construction-time choice in this demo's
+        // builders; a live rebuild would drop overlay/label state).
+        const adaptiveCheckbox = document.getElementById('diag-adaptive');
+        adaptiveCheckbox.disabled = false;
+        adaptiveCheckbox.checked = useAdaptive;
+        adaptiveCheckbox.addEventListener('change', () => {
+            const url = new URL(window.location);
+            if (adaptiveCheckbox.checked) url.searchParams.set('adaptive', '1');
+            else url.searchParams.delete('adaptive');
+            window.location.href = url.toString();
+        });
+        if (useAdaptive) {
+            // Mutually exclusive with the engine/canvas antimeridian clip.
+            clipCheckbox.checked = false;
+            clipCheckbox.disabled = true;
+        }
 
         // Cross-dataset overlays: coast / shade / image (one shared row).
         for (const [id, param, get, set] of [

@@ -24,9 +24,35 @@ uniform highp vec4 u_projection_tile_mercator_coords;
 // CPU-side, so the pole sentinel branch below never meets this path.
 uniform highp vec4 u_projection_ee_quad_uv;
 uniform highp vec4 u_projection_ee_quad_vv;
+// Stage C adaptive blend (plan step 11): 1 = fully Equal Earth (the static
+// projection always sends 1 — see EqualEarthTransform.getProjectionData),
+// 0 = fully mercator, between = the adaptive transform's zoom-driven morph.
+// u_projection_fallback_matrix is the MERCATOR per-tile matrix, so at 0 the
+// blend lands exactly on the pure-mercator rendering. Same uniform pair and
+// semantics as globe's vertical-perspective↔mercator transition.
+uniform highp float u_projection_transition;
+uniform mat4 u_projection_fallback_matrix;
 
 bool eeLinearizedMode() {
     return u_projection_tile_mercator_coords.z == 0.0;
+}
+
+// Mix an Equal Earth clip position toward the mercator fallback position.
+// Both endpoints are affine flat projections (w == 1 out of either matrix),
+// so a plain clip-space mix is exact — none of globe's Z/clipping-plane
+// special-casing applies. Pole sentinel vertices stay at their EE position:
+// mercator carries no data beyond ±85.05°, so the fallback position of a
+// sentinel would be garbage; EE-only pole geometry simply holds still
+// through the morph (globe's pole handling makes the same call).
+vec4 eeMixWithFallback(vec4 eePos, vec2 posInTile, vec2 rawPos, float elevation) {
+    if (u_projection_transition > 0.999) {
+        return eePos;
+    }
+    if (rawPos.y < -32767.5 || rawPos.y > 32766.5) {
+        return eePos;
+    }
+    vec4 flatPos = u_projection_fallback_matrix * vec4(posInTile, elevation, 1.0);
+    return mix(flatPos, eePos, u_projection_transition);
 }
 
 // const float rather than #define: the shader minifier in
@@ -79,12 +105,21 @@ float projectLineThickness(float tileY) {
     // geometric mean made them balloon. The correction now applies with a
     // 2.0 cap: honest at mid-latitudes (1.16x equator, 1.7x at 60 deg),
     // bounded at the poles. The full option space stays recorded in the
-    // design proposal.
-    return min(eeThicknessCorrectionAtTileY(tileY), 2.0);
+    // design proposal. During the adaptive blend the correction eases to
+    // mercator's 1.0 (globe's pattern).
+    float thickness = min(eeThicknessCorrectionAtTileY(tileY), 2.0);
+    if (u_projection_transition < 0.999) {
+        return mix(1.0, thickness, u_projection_transition);
+    }
+    return thickness;
 }
 
 float projectCircleRadius(float tileY) {
-    return eeThicknessCorrectionAtTileY(tileY);
+    float radius = eeThicknessCorrectionAtTileY(tileY);
+    if (u_projection_transition < 0.999) {
+        return mix(1.0, radius, u_projection_transition);
+    }
+    return radius;
 }
 
 // Consider this private. Computes the Equal Earth position of a vertex as
@@ -146,10 +181,11 @@ vec4 projectTile(vec2 p, vec2 rawPos) {
     if (eeLinearizedMode()) {
         // Linearized tiles are never pole-row tiles (CPU-side eligibility),
         // so rawPos sentinels cannot occur here.
-        return projectTileLinearized(p, 0.0);
+        return eeMixWithFallback(projectTileLinearized(p, 0.0), p, rawPos, 0.0);
     }
     vec2 ee = projectToEqualEarth(p, rawPos);
-    return u_projection_matrix * vec4(ee.x, ee.y, 0.0, 1.0);
+    vec4 eePos = u_projection_matrix * vec4(ee.x, ee.y, 0.0, 1.0);
+    return eeMixWithFallback(eePos, p, rawPos, 0.0);
 }
 
 // Projects a point in tile-local coordinates (usually 0..EXTENT) to screen.
@@ -163,10 +199,11 @@ vec4 projectTileWithElevation(vec2 posInTile, float elevation) {
     // pole vertices, so no sentinel detection. Elevation passes through as z
     // (unused in Demo A).
     if (eeLinearizedMode()) {
-        return projectTileLinearized(posInTile, elevation);
+        return eeMixWithFallback(projectTileLinearized(posInTile, elevation), posInTile, vec2(0.0, 0.0), elevation);
     }
     vec2 ee = projectToEqualEarth(posInTile, vec2(0.0, 0.0));
-    return u_projection_matrix * vec4(ee.x, ee.y, elevation, 1.0);
+    vec4 eePos = u_projection_matrix * vec4(ee.x, ee.y, elevation, 1.0);
+    return eeMixWithFallback(eePos, posInTile, vec2(0.0, 0.0), elevation);
 }
 
 vec4 projectTileFor3D(vec2 posInTile, float elevation) {

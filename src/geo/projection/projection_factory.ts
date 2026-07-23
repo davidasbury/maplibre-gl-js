@@ -11,6 +11,9 @@ import {VerticalPerspectiveProjection} from './vertical_perspective_projection.t
 import {EqualEarthProjection} from './equal_earth_projection.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {EqualEarthCameraHelper} from './equal_earth_camera_helper.ts';
+import {EqualEarthAdaptiveProjection} from './equal_earth_adaptive_projection.ts';
+import {EqualEarthAdaptiveTransform} from './equal_earth_adaptive_transform.ts';
+import {EqualEarthAdaptiveCameraHelper} from './equal_earth_adaptive_camera_helper.ts';
 
 import type {ProjectionSpecification} from '@maplibre/maplibre-gl-style-spec';
 import type {Projection} from './projection.ts';
@@ -24,6 +27,18 @@ export function createProjectionFromName(name: ProjectionSpecification['type'], 
 } {
     const transformOptions = {constrainOverride: transformConstrain};
     if (Array.isArray(name)) {
+        // Stage C: a projection expression whose stops include equal-earth
+        // routes to the adaptive Equal Earth composite; anything else keeps
+        // the globe composite (the pre-existing behavior for
+        // vertical-perspective/mercator expressions).
+        if ((name as unknown[]).flat(20).includes('equal-earth')) {
+            const eeAdaptiveProjection = new EqualEarthAdaptiveProjection({type: name});
+            return {
+                projection: eeAdaptiveProjection,
+                transform: new EqualEarthAdaptiveTransform(transformOptions),
+                cameraHelper: new EqualEarthAdaptiveCameraHelper(eeAdaptiveProjection),
+            };
+        }
         const globeProjection = new GlobeProjection({type: name});
         return {
             projection: globeProjection,
@@ -71,6 +86,27 @@ export function createProjectionFromName(name: ProjectionSpecification['type'], 
                 projection: new EqualEarthProjection(),
                 transform: new EqualEarthTransform(transformOptions),
                 cameraHelper: new EqualEarthCameraHelper(),
+            };
+        }
+        case 'equal-earth-adaptive':
+        {
+            // The adaptive preset, exactly the way 'globe' is a preset of
+            // vertical-perspective->mercator: pure Equal Earth below z4,
+            // pure mercator above z6 (Mapbox v2.6 shipped ~5-6; tuning is
+            // plan step 13).
+            const eeAdaptiveProjection = new EqualEarthAdaptiveProjection({type: [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                4,
+                'equal-earth',
+                6,
+                'mercator'
+            ] as any});
+            return {
+                projection: eeAdaptiveProjection,
+                transform: new EqualEarthAdaptiveTransform(transformOptions),
+                cameraHelper: new EqualEarthAdaptiveCameraHelper(eeAdaptiveProjection),
             };
         }
         default:

@@ -412,7 +412,12 @@ export class Painter {
         // z0/wrap0 projection data: the polynomial shader path recovers
         // unwrapped lng from these tile coords (the lambda0 fold included),
         // bending the straight seam edges onto the curved outline.
-        const projectionData = this.transform.getProjectionData({overscaledTileID: new OverscaledTileID(0, 0, 0, 0, 0), applyGlobeMatrix: false});
+        // applyGlobeMatrix MUST be true: since the Stage C blend landed,
+        // false forces projectionTransition to 0, which renders geometry at
+        // the mercator fallback position — the mask is a pure-EE construct
+        // and must be projected by the full EE path. (Pre-blend the EE
+        // shader ignored the transition, so false was inert here.)
+        const projectionData = this.transform.getProjectionData({overscaledTileID: new OverscaledTileID(0, 0, 0, 0, 0), applyGlobeMatrix: true});
 
         this.useProgram('clippingMask').draw(context, gl.TRIANGLES,
             DepthMode.disabled,
