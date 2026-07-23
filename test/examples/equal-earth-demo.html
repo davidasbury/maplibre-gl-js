@@ -330,7 +330,7 @@
             const key = colKey + ':' + rowKey;
             if (seen.has(key)) return;
             seen.add(key);
-            centers.push([x, y]);
+            centers.push([x, y, key]);
         };
         if (!pointy) {
             const worldCols = Math.round(1 / a); // integer by quantization (2n columns)
@@ -368,6 +368,32 @@
         return ring;
     }
 
+    // Seam-straddling cells must NOT be emitted with unwrapped longitudes:
+    // vertices beyond ±180 get renormalized somewhere in the GeoJSON
+    // pipeline and the rings mangle into the owner-reported column of
+    // white shards at the antimeridian. Split them at ±180 into a
+    // MultiPolygon instead (each piece a simple in-range ring); the
+    // quantized grid guarantees the two pieces join seamlessly across
+    // the seam.
+    function hexGeometry(ring) {
+        const lngs = ring.map(([lng]) => lng);
+        const over = Math.max(...lngs) > 180, under = Math.min(...lngs) < -180;
+        if (!over && !under) return {type: 'Polygon', coordinates: [ring]};
+        const pieces = [];
+        if (over) {
+            const inRange = clipRingToHalfPlane(ring, true, 180);
+            const wrapped = clipRingToHalfPlane(ring.map(([lng, lat]) => [lng - 360, lat]), false, -180);
+            if (inRange) pieces.push([inRange]);
+            if (wrapped) pieces.push([wrapped]);
+        } else {
+            const inRange = clipRingToHalfPlane(ring, false, -180);
+            const wrapped = clipRingToHalfPlane(ring.map(([lng, lat]) => [lng + 360, lat]), true, 180);
+            if (inRange) pieces.push([inRange]);
+            if (wrapped) pieces.push([wrapped]);
+        }
+        return {type: 'MultiPolygon', coordinates: pieces};
+    }
+
     let hexLastGen = null; // {bucket, pointy, x0, x1, y0, y1} — regen hysteresis
 
     async function buildHexbinFeatures() {
@@ -400,7 +426,7 @@
         }
         hexLastGen = {bucket: Math.floor(zoom), pointy: hexPointy, x0, x1, y0, y1};
         const features = [];
-        for (const [cx, cy] of hexCenters(R, x0, x1, y0, y1, hexPointy)) {
+        for (const [cx, cy, cellKey] of hexCenters(R, x0, x1, y0, y1, hexPointy)) {
             if (cy < EE.yNorth - R / 2 || cy > EE.ySouth + R / 2) continue;
             // Trim to the projection outline: keep cells whose center is
             // inside (edge cells overhang the seam; the engine clip trims
@@ -417,8 +443,8 @@
             }
             features.push({
                 type: 'Feature',
-                properties: {land: +(hits / n).toFixed(2)},
-                geometry: {type: 'Polygon', coordinates: [hexRingLngLat(cx, cy, R, hexPointy)]}
+                properties: {land: +(hits / n).toFixed(2), cell: cellKey},
+                geometry: hexGeometry(hexRingLngLat(cx, cy, R, hexPointy))
             });
         }
         return {type: 'FeatureCollection', features};
@@ -702,11 +728,11 @@
     // (Sutherland–Hodgman against the lng<=0 / lng>=0 half-planes).
     // Fills use the split data; coastLINES come from the unsplit data so
     // no artificial Greenwich seam is drawn.
-    function clipRingToHalfPlane(ring, keepWest) {
-        const inside = ([lng]) => keepWest ? lng <= 0 : lng >= 0;
+    function clipRingToHalfPlane(ring, keepWest, boundary = 0) {
+        const inside = ([lng]) => keepWest ? lng <= boundary : lng >= boundary;
         const intersect = (a, b) => {
-            const t = (0 - a[0]) / (b[0] - a[0]);
-            return [0, a[1] + t * (b[1] - a[1])];
+            const t = (boundary - a[0]) / (b[0] - a[0]);
+            return [boundary, a[1] + t * (b[1] - a[1])];
         };
         const out = [];
         for (let i = 0; i < ring.length - 1; i++) {
@@ -1215,6 +1241,17 @@
     // stay attached across checkbox on/off cycles without extra bookkeeping.
     map.on('moveend', updateTissotRatios);
 
+    // View state -> URL (owner-diagnostics QoL, 2026-07-23): center/zoom
+    // are written back on every moveend, so the address bar is always a
+    // shareable repro of the current view — screenshots stopped being
+    // geolocatable guesswork. replaceState only; no history spam.
+    map.on('moveend', () => {
+        const c = map.getCenter();
+        setUrlParam('lng', c.lng.toFixed(4));
+        setUrlParam('lat', c.lat.toFixed(4));
+        setUrlParam('zoom', map.getZoom().toFixed(2));
+    });
+
     // Antimeridian clip mask. Redrawn on every 'render' (cheap: 362
     // map.project() calls -- forward polynomial only -- plus one even-odd
     // fill). The seam path is the lambda0+180 meridian sampled north-to-
@@ -1265,9 +1302,9 @@
             clipCtx.fillStyle = '#ffffff';
             clipCtx.fill(mask, 'evenodd');
         }
-        clipCtx.strokeStyle = '#7a9cb8';
-        clipCtx.lineWidth = 1;
-        clipCtx.stroke(seam);
+        // Seam stroke removed 2026-07-23 (owner: read as a faint blue
+        // outline against imagery; the engine clip edge is crisp without
+        // it). The canvas fallback keeps only its void fill.
     }
     map.on('render', drawClipMask);
     map.on('resize', drawClipMask);

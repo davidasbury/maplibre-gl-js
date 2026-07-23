@@ -74,14 +74,13 @@ float eeThicknessCorrectionAtTileY(float tileY) {
 }
 
 float projectLineThickness(float tileY) {
-    // REVERTED to 1.0 after owner review (2026-07-22): the geometric-mean
-    // correction made graticule lines visibly widen toward the poles — a
-    // look regression on the demo's face. The cartographic options (1.0 =
-    // authored-width-in-tile-space, geometric mean = minimax over
-    // directions, per-direction = impossible for a scalar) are recorded in
-    // the design proposal for an upstream decision; circles keep the
-    // area-true correction below.
-    return 1.0;
+    // Owner-tuned compromise (2026-07-23, third round): 1.0 made lines
+    // thin/fade toward the poles (EE's E-W compression), the 8x-capped
+    // geometric mean made them balloon. The correction now applies with a
+    // 2.0 cap: honest at mid-latitudes (1.16x equator, 1.7x at 60 deg),
+    // bounded at the poles. The full option space stays recorded in the
+    // design proposal.
+    return min(eeThicknessCorrectionAtTileY(tileY), 2.0);
 }
 
 float projectCircleRadius(float tileY) {
