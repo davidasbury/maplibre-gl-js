@@ -120,22 +120,38 @@
            checkbox rows are the interactive controls, so only they (and
            their labels, for click-to-toggle) opt back into pointer events.
            Gate-safety note: the sectioned layout (projection / overlays /
-           relief / basemap) measures a 341.2px panel bottom with the
+           relief / basemap) measures a 281.8px panel bottom with the
            11px/1.35 typography and 11px checkboxes -- clear of every
            pixel-sampled region (center row y=350, center 200x200 patch
            x>=450) per the comment above. Gate E8 asserts bottom < 345 and
-           two step8a gates fail loudly on intrusion (both fired when the
-           first sectioned cut measured 380px); keep new rows inside that
-           budget. HEADROOM IS 3.8px -- i.e. ZERO. A new full-width row
-           costs ~15px and WILL break the budget, so anything new either
-           shares a row with an existing toggle (the coast/image pattern)
-           or lives in a conditional .diag-sub row that is hidden by
-           default (the exag / z_a-z_b pattern). Collapsing sections does
-           not buy headroom: the gates measure the default panel, which is
-           fully expanded on purpose. */
+           two step8a gates fail loudly on intrusion (both fired when an
+           early sectioned cut measured 380px); keep new rows inside that
+           budget. HEADROOM IS ~63px (2026-07-24 owner reclaim: graticule+
+           tissot and terrain+shade paired onto single rows, and the seven
+           basemap radios laid out in two columns -- dropped the bottom from
+           341.8 to 281.8). Prefer keeping it: a new full-width row costs
+           ~15px, so still favour sharing a row with an existing toggle (the
+           coast/image / graticule+tissot pattern) or a conditional .diag-sub
+           row hidden by default (the exag / z_a-z_b pattern). Collapsing
+           sections does not buy headroom: the gates measure the default
+           panel, which is fully expanded on purpose. */
         .diag-toggle,
         .diag-toggle label {
             pointer-events: auto;
+        }
+
+        /* Basemap options in two columns (2026-07-24, owner request for more
+           vertical headroom): the seven radios stack in two side-by-side
+           columns instead of seven rows. The conditional label sub-rows
+           (demotiles/overture) stay full-width BELOW the columns -- they are
+           shown one-at-a-time by mode, so they don't belong in a column. */
+        .diag-basemap-cols {
+            display: flex;
+            gap: 12px;
+        }
+        .diag-basemap-col {
+            display: flex;
+            flex-direction: column;
         }
 
         /* Per-dataset label sub-toggles (step 10): indented under their
@@ -170,38 +186,43 @@
     <div id="diag-gl-row" hidden>gl: <span id="diag-gl">&ndash;</span></div>
     <div class="diag-section" data-section="projection" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-projection">projection <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-projection">
-        <div class="diag-toggle"><label for="diag-proj-clipped" title="Equal Earth, clipped: content beyond &lambda;0&plusmn;180&deg; is void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Engine seam-bit stencil clip by default; ?engineclip=0 falls back to the page canvas mask. Also relaxes the zoom floor from pole-fit to outline-fit. The default, i.e. no URL param."><input type="radio" name="diag-projection" id="diag-proj-clipped" disabled /> clipped</label> <label for="diag-proj-wrapped" title="Equal Earth, unclipped: the world repeats in copies past &plusmn;180&deg; and the zoom floor is pole-fit. ?clip=0."><input type="radio" name="diag-projection" id="diag-proj-wrapped" disabled /> wrapped</label> <label for="diag-proj-adaptive" title="Stage C: zoom-adaptive projection — Equal Earth below z_a, mercator above z_b (defaults 4/6, tunable below), positional morph between. Carries no antimeridian clip (the seam mask is a pure-EE construct). ?adaptive=1. Reload applies."><input type="radio" name="diag-projection" id="diag-proj-adaptive" disabled /> adaptive</label></div>
-        <div id="diag-adaptive-thresholds" class="diag-toggle diag-sub" style="display:none" title="Blend zoom thresholds (Jenny &amp; Savric 2012 adaptive-composite design): pure Equal Earth below z_a, pure mercator above z_b. Live-updates map.setProjection, no reload; ?za=/?zb= persist the values in the URL.">
+        <div class="diag-toggle"><label for="diag-proj-clipped" title="Equal Earth, with an anti-meridian clip: content beyond &lambda;0&plusmn;180&deg; is void at the projection outline (the central meridian changes as you pan). This also relaxes the zoom floor from pole-fit to outline-fit."><input type="radio" name="diag-projection" id="diag-proj-clipped" disabled /> clipped</label> <label for="diag-proj-wrapped" title="Equal Earth, unclipped: the world repeats in copies past &plusmn;180&deg; and the poles are clamped to the viewport. URL param:?clip=0."><input type="radio" name="diag-projection" id="diag-proj-wrapped" disabled /> wrapped</label> <label for="diag-proj-adaptive" title="Zoom-adaptive projection — Equal Earth below z_a, mercator above z_b (defaults 4/6, and is tunable with sliders). URL param:?adaptive=1. This option reloads the page."><input type="radio" name="diag-projection" id="diag-proj-adaptive" disabled /> adaptive</label></div>
+        <div id="diag-adaptive-thresholds" class="diag-toggle diag-sub" style="display:none" title="Blend projections (Jenny &amp; Savric 2012 adaptive-composite design): pure Equal Earth below z_a, pure mercator above z_b. Live-updates without a reload; ?za=/?zb= persist the values in the URL.">
             <label>z<sub>a</sub> <input type="range" id="diag-za" min="0" max="10" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-za-val">4.0</span></label><br>
             <label>z<sub>b</sub> <input type="range" id="diag-zb" min="0" max="10" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-zb-val">6.0</span></label>
         </div>
     </div>
     <div class="diag-section" data-section="overlays" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-overlays">overlays <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-overlays">
-        <div class="diag-toggle" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><label for="diag-graticule"><input type="checkbox" id="diag-graticule" disabled /> graticule</label></div>
+        <div class="diag-toggle"><label for="diag-graticule" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><input type="checkbox" id="diag-graticule" disabled /> graticule</label> <label for="diag-tissot" title="Tissot's indicatrix: each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><input type="checkbox" id="diag-tissot" disabled /> tissot</label></div>
         <div id="diag-lbl-graticule-row" class="diag-toggle diag-sub" style="display:none" title="Graticule line labels (meridian/parallel degree values, line-following along bowing meridians). Overture basemap only. Off by default (?lbl-graticule=1)."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> labels</label></div>
-        <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
         <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any basemap. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any basemap &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
     </div>
     <div class="diag-section" data-section="relief" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-relief">relief <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-relief">
-        <div class="diag-toggle" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with shade. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
+        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with shade. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label> <label for="diag-shade" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain."><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label></div>
         <div id="diag-terrain-exag" class="diag-toggle diag-sub" style="display:none" title="3D terrain vertical exaggeration (map.setTerrain exaggeration). Live-updates, no reload; ?exag= persists in the URL. 1.0 = true scale.">
             <label>exag <input type="range" id="diag-exag" min="0" max="5" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-exag-val">1.5</span></label>
         </div>
-        <div class="diag-toggle" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain."><label for="diag-shade"><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label></div>
     </div>
     <div class="diag-section" data-section="basemap" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-basemap">basemap <span style="opacity:.6">(one, or none)</span> <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-basemap">
-        <div class="diag-toggle"><label for="diag-default" title="Local Natural Earth land polygons (network-free default)."><input type="radio" name="diag-basemap" id="diag-default" disabled /> NE land</label> <label for="diag-none" title="No basemap &mdash; bare relief/overlays over the projection outline (?source=none)."><input type="radio" name="diag-basemap" id="diag-none" disabled /> none</label></div>
-        <div class="diag-toggle" title="Stamen Watercolor basemap (Cooper Hewitt / Smithsonian re-host). Default source = demotiles pmtiles mirror (Alps region, z5+, keyless); ?watercolor=<proxy-url> points at a CORS-adding proxy of the global tiles (the raw Cooper Hewitt endpoint is CORS-blocked). ?source=watercolor."><label for="diag-watercolor"><input type="radio" name="diag-basemap" id="diag-watercolor" disabled /> watercolor</label></div>
-        <div class="diag-toggle" title="Natural Earth admin-0 countries, multi-scale (110m/50m by zoom; add 10m with ?choroplethscale=10m), filled by MAPCOLOR7 — NE's graph colouring where adjacent countries always differ. Hover a country for its name."><label for="diag-choropleth"><input type="radio" name="diag-basemap" id="diag-choropleth" disabled /> choropleth</label></div>
-        <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><label for="diag-demotiles"><input type="radio" name="diag-basemap" id="diag-demotiles" disabled /> demotiles</label></div>
+        <div class="diag-basemap-cols">
+            <div class="diag-basemap-col">
+                <div class="diag-toggle"><label for="diag-none" title="No basemap &mdash; bare relief/overlays over the projection outline (?source=none)."><input type="radio" name="diag-basemap" id="diag-none" disabled /> none</label></div>
+                <div class="diag-toggle"><label for="diag-default" title="Local Natural Earth land polygons (network-free default)."><input type="radio" name="diag-basemap" id="diag-default" disabled /> NE land</label></div>
+                <div class="diag-toggle"><label for="diag-watercolor" title="Stamen Watercolor basemap (Cooper Hewitt / Smithsonian re-host). Default source = demotiles pmtiles mirror (Alps region, z5+, keyless); ?watercolor=<proxy-url> points at a CORS-adding proxy of the global tiles (the raw Cooper Hewitt endpoint is CORS-blocked). ?source=watercolor."><input type="radio" name="diag-basemap" id="diag-watercolor" disabled /> watercolor</label></div>
+                <div class="diag-toggle"><label for="diag-choropleth" title="Natural Earth admin-0 countries, multi-scale (110m/50m by zoom; add 10m with ?choroplethscale=10m), filled by MAPCOLOR7 — NE's graph colouring where adjacent countries always differ. Hover a country for its name."><input type="radio" name="diag-basemap" id="diag-choropleth" disabled /> choropleth</label></div>
+            </div>
+            <div class="diag-basemap-col">
+                <div class="diag-toggle"><label for="diag-demotiles" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><input type="radio" name="diag-basemap" id="diag-demotiles" disabled /> demotiles</label></div>
+                <div class="diag-toggle"><label for="diag-overture" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><input type="radio" name="diag-basemap" id="diag-overture" disabled /> overture</label></div>
+                <div class="diag-toggle"><label for="diag-hexbins" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><input type="radio" name="diag-basemap" id="diag-hexbins" disabled /> hexbins</label></div>
+            </div>
+        </div>
         <div id="diag-lbl-demotiles-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> labels</label></div>
-        <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><label for="diag-overture"><input type="radio" name="diag-basemap" id="diag-overture" disabled /> overture</label></div>
         <div id="diag-lbl-divisions-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
         <div id="diag-lbl-roads-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
-        <div class="diag-toggle" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><label for="diag-hexbins"><input type="radio" name="diag-basemap" id="diag-hexbins" disabled /> hexbins</label></div>
     </div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
