@@ -1,0 +1,94 @@
+# Publishes the Equal Earth demo page to GitHub Pages.
+#
+# This is fork-only infrastructure -- it exists to give the equal-area
+# projection work a shareable URL, and is NOT intended to go upstream.
+#
+# dist/ is gitignored, so the bundles the demo imports are built here rather
+# than committed. The published tree mirrors the repo layout the page expects
+# (../../dist, ../bench/data), so the demo file itself needs no rewriting.
+name: Deploy Equal Earth demo to Pages
+
+on:
+  push:
+    branches: [equal-earth]
+    paths:
+      - 'src/**'
+      - 'test/examples/equal-earth-demo.html'
+      - 'test/examples/pmtiles-*.js'
+      - 'test/examples/h3-js-*.js'
+      - 'test/bench/data/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'rolldown.config.ts'
+      - '.github/workflows/pages-equal-earth-demo.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; let a newer push supersede an in-flight build.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - run: npm ci
+
+      # build-dist minus build-prod: the demo imports the dev bundle, and
+      # skipping the production build keeps this off the critical path.
+      - name: Build bundles
+        run: |
+          npm run build-css
+          npm run generate-unicode-data
+          npm run generate-shaders
+          npm run build-dev
+
+      - name: Assemble site
+        run: |
+          set -euo pipefail
+          mkdir -p site/test/examples site/test/bench/data
+          cp -r dist site/dist
+          cp test/examples/equal-earth-demo.html \
+             test/examples/pmtiles-4.4.1.min.js \
+             test/examples/h3-js-4.3.0.umd.js \
+             site/test/examples/
+          cp test/bench/data/ne_110m_admin_0_countries.json \
+             test/bench/data/naturalearth-land.json \
+             site/test/bench/data/
+          # Land the demo at the Pages root URL too, so the short link works.
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Equal Earth demo - MapLibre GL JS fork</title>
+          <meta http-equiv="refresh" content="0; url=./test/examples/equal-earth-demo.html">
+          <link rel="canonical" href="./test/examples/equal-earth-demo.html">
+          <p><a href="./test/examples/equal-earth-demo.html">Equal Earth demo</a></p>
+          HTML
+          # Fail loudly here rather than shipping a blank map.
+          test -s site/dist/maplibre-gl-dev.mjs
+          test -s site/dist/maplibre-gl.css
+          test -s site/test/bench/data/naturalearth-land.json
+
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
