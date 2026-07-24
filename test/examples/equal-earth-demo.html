@@ -7,11 +7,11 @@
     <meta charset='utf-8'>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Inline data-URI favicon (hand-rolled, demo palette: panel dark,
-         water #a4c8e1, land #d8e8c8, graticule #7a9cb8) so the browser
+         water #cfe0ec, land #d8e8c8, graticule #7a9cb8) so the browser
          stops 404-ing /favicon.ico. No external asset on purpose --
          third-party favicons (e.g. map-projections.net) are someone
          else's branding/CC BY-SA, and a data URI needs no fetch at all. -->
-    <link rel='icon' type='image/svg+xml' href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="%23141e28"/><ellipse cx="16" cy="16" rx="13" ry="8.5" fill="%23a4c8e1"/><path d="M6 11c4-3 9-2.5 13-1.5 3.5.9 6 2 6 4 0 2.5-4 3-7 4.5-3 1.5-8 2-10.5-.5C5 15 4.5 12.5 6 11z" fill="%23d8e8c8"/><g stroke="%237a9cb8" stroke-width="0.75" fill="none" opacity="0.85"><path d="M3 16h26"/><path d="M16 7.5v17"/><path d="M9.6 9.3C7.2 13.2 7.2 18.8 9.6 22.7"/><path d="M22.4 9.3c2.4 3.9 2.4 9.5 0 13.4"/></g><ellipse cx="16" cy="16" rx="13" ry="8.5" fill="none" stroke="%233a5a72" stroke-width="1"/></svg>'/>
+    <link rel='icon' type='image/svg+xml' href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="%23141e28"/><ellipse cx="16" cy="16" rx="13" ry="8.5" fill="%23cfe0ec"/><path d="M6 11c4-3 9-2.5 13-1.5 3.5.9 6 2 6 4 0 2.5-4 3-7 4.5-3 1.5-8 2-10.5-.5C5 15 4.5 12.5 6 11z" fill="%23d8e8c8"/><g stroke="%237a9cb8" stroke-width="0.75" fill="none" opacity="0.85"><path d="M3 16h26"/><path d="M16 7.5v17"/><path d="M9.6 9.3C7.2 13.2 7.2 18.8 9.6 22.7"/><path d="M22.4 9.3c2.4 3.9 2.4 9.5 0 13.4"/></g><ellipse cx="16" cy="16" rx="13" ry="8.5" fill="none" stroke="%233a5a72" stroke-width="1"/></svg>'/>
     <link rel='stylesheet' href='../../dist/maplibre-gl.css' />
     <style>
         body {
@@ -820,17 +820,21 @@
     // choice 2026-07-24, after trying an optimised OKLCH set, Dark2, and
     // BrBG): a soft pastel scheme that gives the map a muted atlas look. Set3
     // is a qualitative (unordered) palette -- the right kind for MAPCOLOR7 --
-    // but its pastels are low-chroma and low-contrast, so against the dataviz
-    // skill's validate_palette.js on the #a4c8e1 ocean surface it does NOT
+    // but its pastels are low-chroma, so by validate_palette.js it does NOT
     // clear the all-pairs floors (worst pairs green<->orange deutan ΔE 1.8,
-    // blue<->lavender normal ΔE 8.6), and slot 1 (#8dd3c7 pale teal) sits
-    // ~1.03:1 against the ocean so those countries blend toward the sea. Both
-    // are carried HERE by two non-colour channels: every country is stroked
-    // with the #4d4d4d choropleth-outline (borders stay visible even where
-    // fills collide or blend into the ocean) and the hover tooltip carries
-    // identity. (A purpose-built OKLCH set that DID clear all-pairs -- worst
-    // CVD ΔE 10.0 / normal 16.1 -- is in git history if a colourblind-safe
-    // default is ever wanted; swap it back and re-run the validator.) Colour
+    // blue<->lavender normal ΔE 8.6 -- both palette-internal, surface-
+    // independent). The cool pastels (teal/lavender/blue) originally also
+    // blended into the old #a4c8e1 mid-blue ocean; the water was LIGHTENED to
+    // #cfe0ec (a pale near-white blue) specifically to separate them -- the
+    // worst country-vs-ocean gap went from ΔE 4.5 (lavender) to 10.2, and
+    // slot 1 (#8dd3c7 teal) from 1.03:1 to 1.26:1 -- while keeping the airy
+    // atlas look. The remaining all-pairs shortfall is carried HERE by two
+    // non-colour channels: every country is stroked with the #4d4d4d
+    // choropleth-outline (borders stay visible even where fills collide) and
+    // the hover tooltip carries identity. (A purpose-built OKLCH set that DID
+    // clear all-pairs -- worst CVD ΔE 10.0 / normal 16.1 -- is in git history
+    // if a colourblind-safe default is ever wanted; swap it and re-validate.)
+    // Colour
     // is a fixed attribute of the MAPCOLOR7 value, not an index into a
     // per-file sorted list, so nothing shifts when the zoom band swaps data.
     const MAPCOLOR7_PALETTE = ['#8dd3c7', '#ffffb3', '#bebada', '#fb8072', '#80b1d3', '#fdb462', '#b3de69'];
@@ -1146,8 +1150,8 @@
                 }
             },
             layers: [
-                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
-                ...polarCapLayers('#d8e8c8', '#a4c8e1'),
+                {id: 'background', type: 'background', paint: {'background-color': '#cfe0ec'}},
+                ...polarCapLayers('#d8e8c8', '#cfe0ec'),
                 {id: 'land', type: 'fill', source: 'land', paint: {'fill-color': '#d8e8c8'}},
                 {id: 'land-coast', type: 'line', source: 'land-lines', paint: {'line-color': '#6b8f5a', 'line-width': 0.7}},
                 {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
@@ -1177,8 +1181,8 @@
                 }
             },
             layers: [
-                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
-                ...polarCapLayers('#d8e8c8', '#a4c8e1'),
+                {id: 'background', type: 'background', paint: {'background-color': '#cfe0ec'}},
+                ...polarCapLayers('#d8e8c8', '#cfe0ec'),
                 {
                     id: 'choropleth-fill',
                     type: 'fill',
@@ -1321,7 +1325,7 @@
                 graticule: {type: 'geojson', data: graticule}
             },
             layers: [
-                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
+                {id: 'background', type: 'background', paint: {'background-color': '#cfe0ec'}},
                 // §5.5 polar caps: south continues Antarctic land/ice, north
                 // continues Arctic water (the tinted overture water color).
                 ...polarCapLayers('#d8e8c8', '#93bedd'),
@@ -1448,8 +1452,8 @@
                 ...extraSources
             },
             layers: [
-                {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
-                ...polarCapLayers('#e8ecef', '#a4c8e1'),
+                {id: 'background', type: 'background', paint: {'background-color': '#cfe0ec'}},
+                ...polarCapLayers('#e8ecef', '#cfe0ec'),
                 ...extraLayers,
                 {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
             ]
