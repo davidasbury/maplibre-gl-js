@@ -816,22 +816,24 @@
     // skill's pairwise-CVD check at 171 categories and leaned on the hover
     // tooltip as its ONLY identity channel.
     //
-    // The 7 fill colours are ColorBrewer's "Dark2" qualitative palette (owner
-    // choice 2026-07-24). Dark2 is designed for ADJACENT distinctness in
-    // typical categorical charts, not all-pairs separation, so against the
-    // dataviz skill's validate_palette.js on the #a4c8e1 ocean surface it does
-    // NOT clear the all-pairs floors -- worst pairs are pink<->teal (deutan
-    // ΔE 1.7) and brown<->orange (normal ΔE 9.9). That is acceptable HERE
-    // because of two non-colour channels the map already carries: every
-    // country is stroked with the #4d4d4d choropleth-outline, so a border
-    // stays visible even where two fills collide under CVD, and the hover
-    // tooltip carries identity. (A purpose-built OKLCH set that DID clear
-    // all-pairs -- worst CVD ΔE 10.0 / normal 16.1 -- is in git history at
-    // the previous commit if a colourblind-safe default is ever wanted; swap
-    // it back and re-run the validator.) Colour is a fixed attribute of the
-    // MAPCOLOR7 value, not an index into a per-file sorted list, so nothing
-    // shifts when the zoom band swaps the source data.
-    const MAPCOLOR7_PALETTE = ['#1b9e77', '#d95f02', '#7570b3', '#e7298a', '#66a61e', '#e6ab02', '#a6761d'];
+    // The 7 fill colours are ColorBrewer's "Set3" qualitative palette (owner
+    // choice 2026-07-24, after trying an optimised OKLCH set, Dark2, and
+    // BrBG): a soft pastel scheme that gives the map a muted atlas look. Set3
+    // is a qualitative (unordered) palette -- the right kind for MAPCOLOR7 --
+    // but its pastels are low-chroma and low-contrast, so against the dataviz
+    // skill's validate_palette.js on the #a4c8e1 ocean surface it does NOT
+    // clear the all-pairs floors (worst pairs green<->orange deutan ΔE 1.8,
+    // blue<->lavender normal ΔE 8.6), and slot 1 (#8dd3c7 pale teal) sits
+    // ~1.03:1 against the ocean so those countries blend toward the sea. Both
+    // are carried HERE by two non-colour channels: every country is stroked
+    // with the #4d4d4d choropleth-outline (borders stay visible even where
+    // fills collide or blend into the ocean) and the hover tooltip carries
+    // identity. (A purpose-built OKLCH set that DID clear all-pairs -- worst
+    // CVD ΔE 10.0 / normal 16.1 -- is in git history if a colourblind-safe
+    // default is ever wanted; swap it back and re-run the validator.) Colour
+    // is a fixed attribute of the MAPCOLOR7 value, not an index into a
+    // per-file sorted list, so nothing shifts when the zoom band swaps data.
+    const MAPCOLOR7_PALETTE = ['#8dd3c7', '#ffffb3', '#bebada', '#fb8072', '#80b1d3', '#fdb462', '#b3de69'];
     // Match the integer MAPCOLOR7 (1..7) to its palette slot; grey fallback
     // for a would-be unassigned feature (none in NE admin-0 -- defensive).
     const choroplethFillColor = ['match', ['get', 'MAPCOLOR7'],
