@@ -195,7 +195,7 @@
     <div id="diag-body-basemap">
         <div class="diag-toggle"><label for="diag-default" title="Local Natural Earth land polygons (network-free default)."><input type="radio" name="diag-basemap" id="diag-default" disabled /> NE land</label> <label for="diag-none" title="No basemap &mdash; bare relief/overlays over the projection outline (?source=none)."><input type="radio" name="diag-basemap" id="diag-none" disabled /> none</label></div>
         <div class="diag-toggle" title="Stamen Watercolor basemap (Cooper Hewitt / Smithsonian re-host). Default source = demotiles pmtiles mirror (Alps region, z5+, keyless); ?watercolor=<proxy-url> points at a CORS-adding proxy of the global tiles (the raw Cooper Hewitt endpoint is CORS-blocked). ?source=watercolor."><label for="diag-watercolor"><input type="radio" name="diag-basemap" id="diag-watercolor" disabled /> watercolor</label></div>
-        <div class="diag-toggle" title="Natural Earth 110m admin-0 countries, colored by SOVEREIGNT (deterministic OKLCH hue per country; hover a country for its name)."><label for="diag-choropleth"><input type="radio" name="diag-basemap" id="diag-choropleth" disabled /> choropleth</label></div>
+        <div class="diag-toggle" title="Natural Earth admin-0 countries, multi-scale (110m/50m by zoom; add 10m with ?choroplethscale=10m), filled by MAPCOLOR7 — NE's graph colouring where adjacent countries always differ. Hover a country for its name."><label for="diag-choropleth"><input type="radio" name="diag-basemap" id="diag-choropleth" disabled /> choropleth</label></div>
         <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><label for="diag-demotiles"><input type="radio" name="diag-basemap" id="diag-demotiles" disabled /> demotiles</label></div>
         <div id="diag-lbl-demotiles-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> labels</label></div>
         <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><label for="diag-overture"><input type="radio" name="diag-basemap" id="diag-overture" disabled /> overture</label></div>
@@ -747,10 +747,12 @@
 
 
     // Step 7 (reworked 2026-07-24, owner request): `?choropleth=1` swaps the
-    // flat land fill for a real per-country choropleth -- Natural Earth 110m
-    // admin-0 countries (test/bench/data/ne_110m_admin_0_countries.json,
-    // trimmed from the owner's local NE vector clone to SOVEREIGNT/NAME/
-    // ADMIN + geometry), colored by SOVEREIGNT.
+    // flat land fill for a real per-country choropleth -- Natural Earth
+    // admin-0 countries, multi-scale (110m/50m/10m by zoom, see
+    // fetchChoropleth below), filled by MAPCOLOR7. The committed 110m file
+    // (test/bench/data/ne_110m_admin_0_countries.json) is trimmed from the
+    // local NE vector clone to SOVEREIGNT/NAME/ADMIN/MAPCOLOR7 + geometry;
+    // 50m/10m come from the pinned NE raw URL on demand.
     const useChoropleth = params.get('choropleth') === '1';
 
     // Step 8 remainder (a) antimeridian clip mode: `?clip=1` masks content
@@ -805,62 +807,74 @@
     const srcMax = params.has('srcmax') ? parseInt(params.get('srcmax'), 10) : null;
     const srcMaxOpt = srcMax !== null ? {maxzoom: srcMax} : {};
 
-    // OKLCH -> sRGB hex (Bjorn Ottosson reference matrices) -- used to assign
-    // each SOVEREIGNT a deterministic, perceptually-even color: fixed
-    // lightness/chroma (validated in-band via the dataviz skill's palette
-    // validator: lightness band, chroma floor, and contrast vs surface all
-    // PASS) with hue spread by the golden angle over the sorted unique
-    // SOVEREIGNT list -- the standard technique for N deterministic,
-    // evenly-distributed categorical colors. Disclosed tradeoff, not an
-    // oversight: at 171 countries this cannot clear the skill's pairwise-CVD
-    // check (validated: even 15 sample hues already fail all-pairs
-    // separation -- no palette can guarantee 171 mutually-distinguishable
-    // hues, and the skill itself notes its own 8-hue default only clears
-    // all-pairs CVD on its first three slots). Color here mainly keeps
-    // neighboring countries visually distinct (boundary differentiation),
-    // not memorizable identity -- the hover tooltip (wired below, near the
-    // other map.on() handlers) is the actual identity channel, per the
-    // skill's "CVD failure is legal only with secondary encoding" rule.
-    function oklchToHex(L, C, hueDeg) {
-        const hRad = hueDeg * Math.PI / 180;
-        const a = C * Math.cos(hRad), b = C * Math.sin(hRad);
-        const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
-        const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
-        const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
-        const l = l_ ** 3, m = m_ ** 3, s = s_ ** 3;
-        const rLin = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
-        const gLin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
-        const bLin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
-        const lin2s = (c) => { c = Math.max(0, Math.min(1, c)); return c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055; };
-        const toHex = (c) => Math.round(255 * lin2s(c)).toString(16).padStart(2, '0');
-        return '#' + toHex(rLin) + toHex(gLin) + toHex(bLin);
-    }
-    const GOLDEN_ANGLE_DEG = 137.50776405003785;
-    const SOVEREIGNT_COLOR_L = 0.62, SOVEREIGNT_COLOR_C = 0.125;
+    // Choropleth basemap fill colour (reworked 2026-07-24, owner request):
+    // NE's built-in MAPCOLOR7 -- a graph colouring where no two ADJACENT
+    // countries share a value, so every land border stays visible in the
+    // fill alone, and stable across all three scales (verified: 0 of the 177
+    // shared countries change MAPCOLOR7 between 110m/50m/10m). This replaced a
+    // golden-angle hue-per-SOVEREIGNT scheme that could not clear the dataviz
+    // skill's pairwise-CVD check at 171 categories and leaned on the hover
+    // tooltip as its ONLY identity channel.
+    //
+    // The 7 fill colours are a purpose-built OKLCH palette, optimised for
+    // all-pairs separation and validated with the skill's own
+    // scripts/validate_palette.js against the #a4c8e1 ocean surface:
+    //   worst all-pairs CVD ΔE 10.0 (>= 8 target), normal-vision 16.1
+    //   (>= 15 hard floor), each colour >= 16 from the ocean and >= 23 from
+    //   the land green -- so islands read by fill, not only by the outline.
+    // MAPCOLOR's adjacency guarantee means the 21 value-pairs only need
+    // mutual distinctness (which they pass), not the impossible 171-way
+    // separation the old scheme attempted. Colour is a fixed attribute of the
+    // value, not an index into a per-file sorted list, so nothing shifts when
+    // the zoom band swaps the source data.
+    const MAPCOLOR7_PALETTE = ['#753891', '#25b898', '#b790fb', '#b84a6d', '#266e16', '#bd8c46', '#5476cf'];
+    // Match the integer MAPCOLOR7 (1..7) to its palette slot; grey fallback
+    // for a would-be unassigned feature (none in NE admin-0 -- defensive).
+    const choroplethFillColor = ['match', ['get', 'MAPCOLOR7'],
+        1, MAPCOLOR7_PALETTE[0], 2, MAPCOLOR7_PALETTE[1], 3, MAPCOLOR7_PALETTE[2],
+        4, MAPCOLOR7_PALETTE[3], 5, MAPCOLOR7_PALETTE[4], 6, MAPCOLOR7_PALETTE[5],
+        7, MAPCOLOR7_PALETTE[6], '#cccccc'];
 
-    let sovereigntDataPromise = null;
-    function getSovereigntData() {
-        if (!sovereigntDataPromise) {
-            sovereigntDataPromise = fetch('../bench/data/ne_110m_admin_0_countries.json')
-                .then((r) => r.json())
+    // Multi-scale choropleth data, mirroring the coast overlay's pattern
+    // (110m/50m/10m by zoom band): one stable `choropleth` geojson source that
+    // the zoom handler swaps via setData, never a full style rebuild. 110m is
+    // the committed local file (network-free default, the z<3 band); 50m and
+    // 10m are fetched from the pinned NE v5.1.2 raw GeoJSON on demand, exactly
+    // as coast fetches its denser scales. 10m (13 MB, ~548k vertices through
+    // the clamp+split passes) is behind ?choroplethscale=10m -- off the
+    // default path and off public-Pages visitors' machines unless asked for;
+    // without it the top band caps at 50m.
+    const NE_ADMIN0_URL = (scale) => `https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_${scale}_admin_0_countries.geojson`;
+    const CHOROPLETH_110M_LOCAL = '../bench/data/ne_110m_admin_0_countries.json';
+    const choroplethAllow10m = params.get('choroplethscale') === '10m';
+    function choroplethScaleForZoom(z) {
+        const s = z < 3 ? '110m' : z < 6 ? '50m' : '10m';
+        return (s === '10m' && !choroplethAllow10m) ? '50m' : s;
+    }
+    const choroplethCache = new Map(); // scale -> Promise<FeatureCollection> (clamped + AM-split)
+    function fetchChoropleth(scale) {
+        if (!choroplethCache.has(scale)) {
+            const url = scale === '110m' ? CHOROPLETH_110M_LOCAL : NE_ADMIN0_URL(scale);
+            choroplethCache.set(scale, fetch(url)
+                .then((r) => { if (!r.ok) throw new Error(`choropleth ${scale}: HTTP ${r.status}`); return r.json(); })
                 .then(clampToMercatorRange)
-                .then(splitAntimeridianTouching);
+                .then(splitAntimeridianTouching)
+                .catch((e) => { choroplethCache.delete(scale); throw e; }));
         }
-        return sovereigntDataPromise;
+        return choroplethCache.get(scale);
     }
-
-    async function buildChoroplethSource() {
-        const countries = await getSovereigntData();
-        const sovereignties = [...new Set(countries.features.map((f) => f.properties.SOVEREIGNT))].sort();
-        const colorBySovereignt = new Map(sovereignties.map((name, i) =>
-            [name, oklchToHex(SOVEREIGNT_COLOR_L, SOVEREIGNT_COLOR_C, (i * GOLDEN_ANGLE_DEG) % 360)]));
-        return {
-            type: 'FeatureCollection',
-            features: countries.features.map((feature) => ({
-                ...feature,
-                properties: {...feature.properties, color: colorBySovereignt.get(feature.properties.SOVEREIGNT)}
-            }))
-        };
+    let choroplethApplied = null; // scale currently in the choropleth source
+    async function applyChoroplethData() {
+        if (!map.getSource('choropleth')) return; // choropleth isn't the active basemap
+        const scale = choroplethScaleForZoom(map.getZoom());
+        if (choroplethApplied === scale) return;
+        const data = await fetchChoropleth(scale);
+        // Re-check after the await: the style may have swapped away, or the
+        // zoom band moved on, while the fetch was in flight (mirrors coast).
+        if (!map.getSource('choropleth')) return;
+        if (choroplethScaleForZoom(map.getZoom()) !== scale) return;
+        map.getSource('choropleth').setData(data);
+        choroplethApplied = scale;
     }
 
     // Step 8 Tissot's-indicatrix mode: `?tissot=1` overlays geodesic small
@@ -1103,12 +1117,6 @@
     // `localStyle` block: demotiles takes precedence over choropleth, and
     // `srcMaxOpt` applies to the plain land style only (its historical
     // scope -- the f32 ladder never ran choropleth).
-    let choroplethSourceData = null;
-    async function getChoroplethSourceData() {
-        if (!choroplethSourceData) choroplethSourceData = await buildChoroplethSource();
-        return choroplethSourceData;
-    }
-
     async function buildLandStyle() {
         return {
             version: 8,
@@ -1142,13 +1150,19 @@
     }
 
     async function buildChoroplethStyle() {
+        // Load the scale for the current zoom into the source up front (the
+        // basemap should never flash empty); the zoom handler swaps scales
+        // afterward via applyChoroplethData/setData.
+        const scale = choroplethScaleForZoom(map.getZoom());
+        const data = await fetchChoropleth(scale);
+        choroplethApplied = scale;
         return {
             version: 8,
             projection: projectionSpec(),
             sources: {
                 choropleth: {
                     type: 'geojson',
-                    data: await getChoroplethSourceData()
+                    data
                 },
                 'polar-caps': {type: 'geojson', data: polarCaps},
                 graticule: {
@@ -1164,7 +1178,7 @@
                     type: 'fill',
                     source: 'choropleth',
                     paint: {
-                        'fill-color': ['get', 'color'],
+                        'fill-color': choroplethFillColor,
                         'fill-opacity': 0.9
                     }
                 },
@@ -1825,6 +1839,7 @@
     }
     map.on('zoomend', () => {
         applyNeCoastData().catch(console.error);
+        applyChoroplethData().catch(console.error);
     });
 
     // Choropleth hover tooltip (dataviz-skill secondary encoding: the
