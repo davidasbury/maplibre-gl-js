@@ -89,14 +89,46 @@ export class EqualEarthAdaptiveTransform implements ITransform {
     setRenderWorldCopies(renderWorldCopies: boolean): void {
         this._helper.setRenderWorldCopies(renderWorldCopies);
     }
+    /**
+     * Camera-angle ease-to-flat (step 13/14 opener, owner design): unlike
+     * static EqualEarthTransform, which hard-clamps bearing/pitch/roll to
+     * 0 always (Equal Earth's geometry — clip stencil, covering-tiles —
+     * assumes an unrotated top-down view), the adaptive composite
+     * supports full 3D camera angles in pure mercator and eases them to 0
+     * as the blend enters Equal Earth territory, mirroring how Google
+     * Maps eases tilt to flat as you zoom out past its 3D threshold — no
+     * hard snap. `_requestedX` is what the caller asked for (what
+     * `setBearing`/`setPitch`/`setRoll` remember); the value actually
+     * pushed into `_helper` (and therefore `this.bearing`/`.pitch`/
+     * `.roll`, and everything downstream — camera matrices, symbol
+     * placement) is `_requestedX * (1 - eeness)`: full value at eeness=0
+     * (pure mercator), continuously decaying to exactly 0 at eeness=1
+     * (pure Equal Earth), tied to the same transition value driving the
+     * projection morph rather than a separate threshold — re-tilting
+     * while zooming back toward mercator eases back up the same way.
+     */
+    private _requestedBearing: number = 0;
+    private _requestedPitch: number = 0;
+    private _requestedRoll: number = 0;
+
+    private _applyDecayedCameraAngles(): void {
+        const k = 1 - this._eeness;
+        this._helper.setBearing(this._requestedBearing * k);
+        this._helper.setPitch(this._requestedPitch * k);
+        this._helper.setRoll(this._requestedRoll * k);
+    }
+
     setBearing(bearing: number): void {
-        this._helper.setBearing(bearing);
+        this._requestedBearing = bearing;
+        this._helper.setBearing(bearing * (1 - this._eeness));
     }
     setPitch(pitch: number): void {
-        this._helper.setPitch(pitch);
+        this._requestedPitch = pitch;
+        this._helper.setPitch(pitch * (1 - this._eeness));
     }
     setRoll(roll: number): void {
-        this._helper.setRoll(roll);
+        this._requestedRoll = roll;
+        this._helper.setRoll(roll * (1 - this._eeness));
     }
     setFov(fov: number): void {
         this._helper.setFov(fov);
@@ -279,6 +311,11 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         } else if (this._frozenLambda0 === null) {
             this._frozenLambda0 = this.center.lng;
         }
+        // Re-derive the decayed camera angles for the new eeness — this
+        // is what actually eases pitch/bearing/roll toward 0 as a zoom
+        // (not just an explicit setPitch/setBearing call) carries the
+        // blend from pure mercator into Equal Earth territory.
+        this._applyDecayedCameraAngles();
         this._calcMatrices();
         this._equalEarthTransform.getCoveringTilesDetailsProvider().prepareNextFrame();
         this._mercatorTransform.getCoveringTilesDetailsProvider().prepareNextFrame();
@@ -302,12 +339,28 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         const clone = new EqualEarthAdaptiveTransform();
         clone._eeness = this._eeness;
         clone._frozenLambda0 = this._frozenLambda0;
+        clone._requestedBearing = this._requestedBearing;
+        clone._requestedPitch = this._requestedPitch;
+        clone._requestedRoll = this._requestedRoll;
         clone.apply(this, false);
         return clone;
     }
 
     public apply(that: IReadonlyTransform, constrain: boolean): void {
         this._helper.apply(that, constrain);
+        if (!(that instanceof EqualEarthAdaptiveTransform)) {
+            // Entering this projection from a different transform type
+            // (e.g. a plain mercator/globe map switching to
+            // equal-earth-adaptive): its bearing/pitch/roll become the
+            // new request, then get re-decayed for this transform's own
+            // eeness below. Same-type sources (clone()) already copied
+            // the request explicitly above; `that.bearing` there would
+            // only expose the already-decayed value, so skip re-deriving.
+            this._requestedBearing = that.bearing;
+            this._requestedPitch = that.pitch;
+            this._requestedRoll = that.roll;
+        }
+        this._applyDecayedCameraAngles();
         this._mercatorTransform.apply(this, false);
         this._equalEarthTransform.apply(this, false);
     }
