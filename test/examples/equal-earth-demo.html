@@ -146,7 +146,10 @@
     <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
     <div class="diag-toggle diag-sub" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
     <div class="diag-toggle diag-sub" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
-    <div class="diag-toggle" title="Global Mapterhorn terrarium DEM driving a hillshade layer, blended over the demotiles watercolor PMTiles archive (Innsbruck region &mdash; the CORS-open mirror of the Cooper Hewitt watercolor tiles). Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain</label></div>
+    <div class="diag-toggle" title="Real 3D terrain: map.setTerrain() displacing a Mapterhorn terrarium DEM mesh, hillshade draped on top, over the demotiles watercolor PMTiles (Innsbruck region &mdash; the CORS-open mirror of the Cooper Hewitt tiles). Zoom into the mercator band and pitch (right-drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain</label></div>
+    <div id="diag-terrain-exag" class="diag-toggle diag-sub" style="display:none" title="3D terrain vertical exaggeration (map.setTerrain exaggeration). Live-updates, no reload; ?exag= persists in the URL. 1.0 = true scale.">
+        <label>exag <input type="range" id="diag-exag" min="0" max="5" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-exag-val">1.5</span></label>
+    </div>
     <div class="diag-toggle" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><label for="diag-hexbins"><input type="checkbox" id="diag-hexbins" disabled /> hexbins</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
@@ -193,6 +196,14 @@
     const centerLng = params.has('lng') ? parseFloat(params.get('lng')) : 11.5;
     const centerLat = params.has('lat') ? parseFloat(params.get('lat')) : 0;
     const zoom = params.has('zoom') ? parseFloat(params.get('zoom')) : 1.4;
+    // Camera pitch (?pitch=, degrees) for viewing 3D terrain. Read into the
+    // constructor only, NOT auto-persisted on drag: map.getPitch() in adaptive
+    // mode returns the eeness-DECAYED pitch, not the requested angle, so a
+    // readback would corrupt the URL mid-blend. Static equal-earth clamps pitch
+    // to 0 (one-time console warning); the pitch is honored in the mercator
+    // band and eases to flat under ?adaptive=1. Mainly for sharing/repro of the
+    // 3D-terrain view.
+    const pitchInit = params.has('pitch') ? parseFloat(params.get('pitch')) : 0;
     const useDemotiles = params.get('source') === 'demotiles';
 
     // `?source=overture` renders Overture Maps PMTiles. Landed geometry-only
@@ -264,6 +275,14 @@
         if (zA === DEFAULT_ZA && zB === DEFAULT_ZB) return {type: 'equal-earth-adaptive'};
         return {type: ['interpolate', ['linear'], ['zoom'], zA, 'equal-earth', zB, 'mercator']};
     }
+
+    // 3D-terrain vertical exaggeration (?exag=, default 1.5). Drives
+    // map.setTerrain({exaggeration}) live via the terrain-mode slider; only
+    // meaningful in terrain mode. 1.0 is true vertical scale; >1 amplifies
+    // relief for legibility at global/regional zooms.
+    const DEFAULT_EXAG = 1.5;
+    let terrainExag = parseFloat(params.get('exag'));
+    if (!(Number.isFinite(terrainExag) && terrainExag >= 0)) terrainExag = DEFAULT_EXAG;
 
     // Minimal EE forward/inverse for page-side grid math — mirrors
     // src/geo/equal_earth_coordinate.ts (values must match; the engine
@@ -1343,6 +1362,37 @@
         };
     }
 
+    // Real 3D terrain (map.setTerrain) is a per-style side effect, not part of
+    // the style JSON: setStyle resets it, so it is (re)applied after each style
+    // load when terrain mode is active and cleared otherwise. The DEM source
+    // ('mapterhorn') exists only in the terrain style, so setTerrain is only
+    // ever called for that mode; clearing (setTerrain(null)) is safe from any
+    // style. Inline styles fire style.load synchronously inside setStyle (see
+    // the clip one-shot below), so isStyleLoaded() is usually already true; the
+    // once('style.load') fallback covers the async (URL) demotiles style too.
+    function applyTerrain(mode) {
+        // apply() is gated on the DEM source EXISTING, not on isStyleLoaded():
+        // a live mode-switch applies the new style as a diff, which adds the
+        // 'mapterhorn' source synchronously but leaves isStyleLoaded() false
+        // (tiles still loading) AND never fires 'style.load' (that only fires
+        // on a full reload). Gating on the source is correct for every path.
+        const apply = () => {
+            if (mode === 'terrain') {
+                if (!map.getSource('mapterhorn')) return false; // DEM not in place yet
+                map.setTerrain({source: 'mapterhorn', exaggeration: terrainExag});
+            } else if (map.getTerrain()) {
+                map.setTerrain(null);
+            }
+            return true;
+        };
+        if (apply()) return;
+        // Terrain style still loading its source (full async reload): apply
+        // once it appears. styledata fires for both full loads and diff
+        // updates, so it catches the cases style.load misses.
+        const onData = () => { if (apply()) map.off('styledata', onData); };
+        map.on('styledata', onData);
+    }
+
     async function applyStyle(mode) {
         if (mode === 'hexbins') map.setStyle(await buildHexbinStyle());
         else if (mode === 'terrain') map.setStyle(buildTerrainStyle());
@@ -1350,6 +1400,7 @@
         else if (mode === 'demotiles') map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
         else if (mode === 'choropleth') map.setStyle(await buildChoroplethStyle());
         else map.setStyle(await buildLandStyle());
+        applyTerrain(mode);
     }
 
     // `transformStyle` is a `setStyle()` option, not a Map constructor
@@ -1365,7 +1416,8 @@
     const map = new maplibregl.Map({
         container: 'map',
         center: [centerLng, centerLat],
-        zoom
+        zoom,
+        pitch: pitchInit
     });
     let clipOn = false; // live transform state; checkbox wiring still happens at 'load'
     // Clip flags must land on the FIRST styled frame, not at the 'load'
@@ -1787,6 +1839,41 @@
             setUrlParam('zb', zB === DEFAULT_ZB ? null : zB.toFixed(1));
         });
 
+        // 3D-terrain exaggeration slider: mirrors z_a/z_b exactly -- a
+        // .diag-sub row shown ONLY in its owning mode (terrain), live-updating
+        // map.setTerrain with URL persist. Because it is hidden off-terrain it
+        // costs nothing against the E8 default-panel budget (E8 loads with
+        // terrain off), the same reason z_a/z_b don't. refreshTerrainExagRow
+        // is also called from refreshStyleFromCheckboxes so toggling the
+        // terrain data-layer shows/hides it live.
+        const terrainExagRow = document.getElementById('diag-terrain-exag');
+        const exagSlider = document.getElementById('diag-exag');
+        const exagVal = document.getElementById('diag-exag-val');
+        exagSlider.value = terrainExag;
+        exagVal.textContent = terrainExag.toFixed(1);
+        function refreshTerrainExagRow() {
+            const on = terrainCheckbox.checked;
+            terrainExagRow.style.display = on ? '' : 'none';
+            exagSlider.disabled = !on;
+        }
+        let terrainUpdatePending = false;
+        exagSlider.addEventListener('input', () => {
+            terrainExag = parseFloat(exagSlider.value);
+            exagVal.textContent = terrainExag.toFixed(1);
+            if (terrainUpdatePending) return;
+            terrainUpdatePending = true;
+            requestAnimationFrame(() => {
+                terrainUpdatePending = false;
+                if (terrainCheckbox.checked && map.getTerrain()) {
+                    map.setTerrain({source: 'mapterhorn', exaggeration: terrainExag});
+                }
+            });
+        });
+        exagSlider.addEventListener('change', () => {
+            setUrlParam('exag', terrainExag === DEFAULT_EXAG ? null : terrainExag.toFixed(1));
+        });
+        refreshTerrainExagRow();
+
         // Cross-dataset overlays: coast / shade / image (one shared row).
         for (const [id, param, get, set] of [
             ['diag-coast', 'coast', () => coastOn, (v) => { coastOn = v; }],
@@ -1855,6 +1942,10 @@
         terrainCheckbox.checked = useTerrain;
         hexbinsCheckbox.checked = useHexbins;
         defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useTerrain && !useHexbins;
+        // Authoritative initial visibility now that terrainCheckbox.checked
+        // reflects the URL (the call inside the exag-slider block above ran
+        // before this assignment, when .checked was still the HTML default).
+        refreshTerrainExagRow();
 
         // Hexbin regeneration: rebuild on zoom-bucket change or viewport
         // move beyond z3, throttled by moveend. H3 cells are earth-fixed
@@ -1943,6 +2034,7 @@
             const mode = activeDataMode();
             applyStyle(mode).catch(console.error);
             refreshLabelCheckboxEnablement();
+            refreshTerrainExagRow();
             setUrlParam('source', (mode === 'hexbins' || mode === 'terrain' || mode === 'overture' || mode === 'demotiles') ? mode : null);
             setUrlParam('choropleth', mode === 'choropleth' ? '1' : null);
         }
