@@ -140,7 +140,7 @@
     <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any data layer. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-shade" title="Mapterhorn hillshade as a standalone blend layer over any data layer (decoupled from the imagery)."><input type="checkbox" id="diag-shade" disabled /> shade</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any data layer &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
     <div class="diag-section">data layers</div>
     <div class="diag-toggle" title="Local Natural Earth land polygons + graticule (network-free default)."><label for="diag-default"><input type="checkbox" id="diag-default" disabled /> default</label></div>
-    <div class="diag-toggle" title="Bucketed choropleth over the local land polygons (deterministic hash-of-coordinate buckets, YlOrRd ramp)."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
+    <div class="diag-toggle" title="Natural Earth 110m admin-0 countries, colored by SOVEREIGNT (deterministic OKLCH hue per country; hover a country for its name)."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
     <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><label for="diag-demotiles"><input type="checkbox" id="diag-demotiles" disabled /> demotiles</label></div>
     <div class="diag-toggle diag-sub" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> labels</label></div>
     <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
@@ -683,16 +683,11 @@
     }
 
 
-    // Step 7: `?choropleth=1` swaps the flat land fill for a bucketed
-    // choropleth layered over the same local style (background + graticule
-    // unchanged). Data source: this repo has no admin-0/countries GeoJSON
-    // (checked test/bench/** and docs/assets/** -- only regional single-
-    // place files exist, docs/assets/us_states.geojson and
-    // docs/assets/rwanda-provinces.geojson, neither global), so polygons are
-    // instead derived from the existing naturalearth-land.json land layer,
-    // bucketed by a deterministic per-feature planar-shoelace area estimate
-    // (5 quantile classes). Honest for demonstrating equal-area RENDERING
-    // even without real per-country statistics attached to the polygons.
+    // Step 7 (reworked 2026-07-24, owner request): `?choropleth=1` swaps the
+    // flat land fill for a real per-country choropleth -- Natural Earth 110m
+    // admin-0 countries (test/bench/data/ne_110m_admin_0_countries.json,
+    // trimmed from the owner's local NE vector clone to SOVEREIGNT/NAME/
+    // ADMIN + geometry), colored by SOVEREIGNT.
     const useChoropleth = params.get('choropleth') === '1';
 
     // Step 8 remainder (a) antimeridian clip mode: `?clip=1` masks content
@@ -747,57 +742,61 @@
     const srcMax = params.has('srcmax') ? parseInt(params.get('srcmax'), 10) : null;
     const srcMaxOpt = srcMax !== null ? {maxzoom: srcMax} : {};
 
-    // Shoelace ring area in raw degrees^2 -- a relative ordering metric for
-    // bucketing only, not a true geodesic area (fine for a rendering demo).
-    function ringArea(ring) {
-        let sum = 0;
-        for (let i = 0; i < ring.length - 1; i++) {
-            const [x1, y1] = ring[i];
-            const [x2, y2] = ring[i + 1];
-            sum += (x1 * y2) - (x2 * y1);
-        }
-        return Math.abs(sum) / 2;
+    // OKLCH -> sRGB hex (Bjorn Ottosson reference matrices) -- used to assign
+    // each SOVEREIGNT a deterministic, perceptually-even color: fixed
+    // lightness/chroma (validated in-band via the dataviz skill's palette
+    // validator: lightness band, chroma floor, and contrast vs surface all
+    // PASS) with hue spread by the golden angle over the sorted unique
+    // SOVEREIGNT list -- the standard technique for N deterministic,
+    // evenly-distributed categorical colors. Disclosed tradeoff, not an
+    // oversight: at 171 countries this cannot clear the skill's pairwise-CVD
+    // check (validated: even 15 sample hues already fail all-pairs
+    // separation -- no palette can guarantee 171 mutually-distinguishable
+    // hues, and the skill itself notes its own 8-hue default only clears
+    // all-pairs CVD on its first three slots). Color here mainly keeps
+    // neighboring countries visually distinct (boundary differentiation),
+    // not memorizable identity -- the hover tooltip (wired below, near the
+    // other map.on() handlers) is the actual identity channel, per the
+    // skill's "CVD failure is legal only with secondary encoding" rule.
+    function oklchToHex(L, C, hueDeg) {
+        const hRad = hueDeg * Math.PI / 180;
+        const a = C * Math.cos(hRad), b = C * Math.sin(hRad);
+        const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+        const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+        const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+        const l = l_ ** 3, m = m_ ** 3, s = s_ ** 3;
+        const rLin = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+        const gLin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+        const bLin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+        const lin2s = (c) => { c = Math.max(0, Math.min(1, c)); return c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055; };
+        const toHex = (c) => Math.round(255 * lin2s(c)).toString(16).padStart(2, '0');
+        return '#' + toHex(rLin) + toHex(gLin) + toHex(bLin);
     }
-    function polygonArea(rings) {
-        let area = ringArea(rings[0]);
-        for (let i = 1; i < rings.length; i++) area -= ringArea(rings[i]);
-        return Math.max(area, 0);
-    }
-    function featureArea(feature) {
-        const geometry = feature.geometry;
-        if (geometry.type === 'Polygon') return polygonArea(geometry.coordinates);
-        if (geometry.type === 'MultiPolygon') return geometry.coordinates.reduce((sum, poly) => sum + polygonArea(poly), 0);
-        return 0;
-    }
+    const GOLDEN_ANGLE_DEG = 137.50776405003785;
+    const SOVEREIGNT_COLOR_L = 0.62, SOVEREIGNT_COLOR_C = 0.125;
 
-    // Sequential 5-class ramp (ColorBrewer YlOrRd) plus thin dark outlines.
-    const CHOROPLETH_RAMP = ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'];
-
-    // Deterministic FNV-1a-style hash of a feature's first coordinate, used
-    // to assign its bucket independently of polygon size. (Area-quantile
-    // bucketing was tried first: land-polygon areas here span ~8 orders of
-    // magnitude, so count-based quantiles put every continent in the same
-    // top bucket and only tiny islands spread across the rest -- technically
-    // deterministic but a visually monotonous demo. Hash-of-coordinate has
-    // no such correlation.)
-    function hashFeature(feature) {
-        const geometry = feature.geometry;
-        const ring = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates[0][0];
-        const [lng, lat] = ring[0];
-        const str = `${lng.toFixed(4)},${lat.toFixed(4)}`;
-        let hash = 2166136261;
-        for (let i = 0; i < str.length; i++) {
-            hash ^= str.charCodeAt(i);
-            hash = Math.imul(hash, 16777619);
+    let sovereigntDataPromise = null;
+    function getSovereigntData() {
+        if (!sovereigntDataPromise) {
+            sovereigntDataPromise = fetch('../bench/data/ne_110m_admin_0_countries.json')
+                .then((r) => r.json())
+                .then(clampToMercatorRange)
+                .then(splitAntimeridianTouching);
         }
-        return Math.abs(hash);
+        return sovereigntDataPromise;
     }
 
     async function buildChoroplethSource() {
-        const land = await getLandFillData();
+        const countries = await getSovereigntData();
+        const sovereignties = [...new Set(countries.features.map((f) => f.properties.SOVEREIGNT))].sort();
+        const colorBySovereignt = new Map(sovereignties.map((name, i) =>
+            [name, oklchToHex(SOVEREIGNT_COLOR_L, SOVEREIGNT_COLOR_C, (i * GOLDEN_ANGLE_DEG) % 360)]));
         return {
             type: 'FeatureCollection',
-            features: land.features.map((feature) => ({...feature, properties: {...feature.properties, bucket: hashFeature(feature) % 5, area: featureArea(feature)}}))
+            features: countries.features.map((feature) => ({
+                ...feature,
+                properties: {...feature.properties, color: colorBySovereignt.get(feature.properties.SOVEREIGNT)}
+            }))
         };
     }
 
@@ -1102,7 +1101,7 @@
                     type: 'fill',
                     source: 'choropleth',
                     paint: {
-                        'fill-color': ['step', ['get', 'bucket'], CHOROPLETH_RAMP[0], 1, CHOROPLETH_RAMP[1], 2, CHOROPLETH_RAMP[2], 3, CHOROPLETH_RAMP[3], 4, CHOROPLETH_RAMP[4]],
+                        'fill-color': ['get', 'color'],
                         'fill-opacity': 0.9
                     }
                 },
@@ -1737,6 +1736,24 @@
     }
     map.on('zoomend', () => {
         applyNeCoastData().catch(console.error);
+    });
+
+    // Choropleth hover tooltip (dataviz-skill secondary encoding: the
+    // OKLCH/golden-angle palette can't guarantee 171 countries are pairwise
+    // distinguishable by hue alone, so the country name on hover is the real
+    // identity channel). Layer-scoped map.on() no-ops harmlessly whenever
+    // 'choropleth-fill' isn't the current style's layer (every non-choropleth
+    // mode), so this needs no mode guard.
+    const choroplethPopup = new maplibregl.Popup({closeButton: false, closeOnClick: false});
+    map.on('mousemove', 'choropleth-fill', (e) => {
+        map.getCanvas().style.cursor = 'pointer';
+        const sovereignt = e.features[0]?.properties?.SOVEREIGNT;
+        if (!sovereignt) return;
+        choroplethPopup.setLngLat(e.lngLat).setText(sovereignt).addTo(map);
+    });
+    map.on('mouseleave', 'choropleth-fill', () => {
+        map.getCanvas().style.cursor = '';
+        choroplethPopup.remove();
     });
 
     map.on('style.load', () => {
