@@ -1351,6 +1351,17 @@
             return {type: 'raster', tiles: [watercolorProxyUrl], tileSize: 256, maxzoom: 16,
                 attribution: 'Stamen Watercolor / Cooper Hewitt (Smithsonian)'};
         }
+        // Warn loudly: the fallback is Alps-only at z5+, so at world zooms it
+        // draws NOTHING and looks like a broken basemap rather than a
+        // deliberate degrade. No host is named here on purpose -- the proxy is
+        // personal infra and must not be baked into an upstream-facing demo.
+        console.warn(
+            '[equal-earth-demo] ?source=watercolor without ?watercolor=<tile-url>: ' +
+            'falling back to the demotiles pmtiles mirror, which covers the ALPS ONLY at z5+ ' +
+            '(expect an empty map at world zooms). The global Cooper Hewitt / Stamen tiles ' +
+            'serve no Access-Control-Allow-Origin header, so they need a CORS-adding proxy: ' +
+            'pass ?watercolor=https://<your-proxy>/watercolor/{z}/{x}/{y}.jpg'
+        );
         return {type: 'raster', url: 'pmtiles://https://demotiles.maplibre.org/pmtiles/raster/watercolor.pmtiles',
             tileSize: 512, minzoom: 5, attribution: '© Stamen (demotiles mirror)'};
     }
