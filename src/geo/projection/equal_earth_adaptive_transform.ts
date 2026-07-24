@@ -354,14 +354,28 @@ export class EqualEarthAdaptiveTransform implements ITransform {
 
     public apply(that: IReadonlyTransform, constrain: boolean): void {
         this._helper.apply(that, constrain);
-        if (!(that instanceof EqualEarthAdaptiveTransform)) {
-            // Entering this projection from a different transform type
-            // (e.g. a plain mercator/globe map switching to
-            // equal-earth-adaptive): its bearing/pitch/roll become the
-            // new request, then get re-decayed for this transform's own
-            // eeness below. Same-type sources (clone()) already copied
-            // the request explicitly above; `that.bearing` there would
-            // only expose the already-decayed value, so skip re-deriving.
+        if (that instanceof EqualEarthAdaptiveTransform) {
+            // Same-type apply: copy the REQUESTED (undecayed) angles directly.
+            // `that.bearing`/`.pitch`/`.roll` here are already decayed by
+            // `that`'s eeness, so reading them would lose the real request;
+            // `_requestedX` is the source of truth (same-class private access
+            // is allowed in TS). This covers clone() AND — critically — any
+            // clone → mutate → apply-back path, e.g. terrain's elevation-aware
+            // jumpTo: it clones this transform, calls setPitch/setBearing on
+            // the clone (setting the clone's `_requestedX`), then applies the
+            // clone back here. The previous guard skipped this branch entirely,
+            // so such a re-apply silently dropped the pitch/bearing change and
+            // `_applyDecayedCameraAngles` reset the helper to 0 — locking pitch
+            // and bearing to 0 whenever 3D terrain (or any elevation-aware
+            // camera op) was active.
+            this._requestedBearing = that._requestedBearing;
+            this._requestedPitch = that._requestedPitch;
+            this._requestedRoll = that._requestedRoll;
+        } else {
+            // Entering this projection from a different transform type (e.g. a
+            // plain mercator/globe map switching to equal-earth-adaptive): its
+            // live bearing/pitch/roll become the new request, then get decayed
+            // for this transform's own eeness below.
             this._requestedBearing = that.bearing;
             this._requestedPitch = that.pitch;
             this._requestedRoll = that.roll;
