@@ -134,22 +134,25 @@
         <label>z<sub>b</sub> <input type="range" id="diag-zb" min="0" max="10" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-zb-val">6.0</span></label>
     </div>
     <div class="diag-section">overlays</div>
-    <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
     <div class="diag-toggle" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><label for="diag-graticule"><input type="checkbox" id="diag-graticule" disabled /> graticule</label></div>
-    <div class="diag-toggle diag-sub" title="Graticule line labels (meridian/parallel degree values, line-following along bowing meridians). Overture mode only &mdash; that style carries the label layer."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> labels</label></div>
-    <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any data layer. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-shade" title="Mapterhorn hillshade as a standalone blend layer over any data layer (decoupled from the imagery)."><input type="checkbox" id="diag-shade" disabled /> shade</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any data layer &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
-    <div class="diag-section">data layers</div>
-    <div class="diag-toggle" title="Local Natural Earth land polygons + graticule (network-free default)."><label for="diag-default"><input type="checkbox" id="diag-default" disabled /> default</label></div>
-    <div class="diag-toggle" title="Natural Earth 110m admin-0 countries, colored by SOVEREIGNT (deterministic OKLCH hue per country; hover a country for its name)."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
-    <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><label for="diag-demotiles"><input type="checkbox" id="diag-demotiles" disabled /> demotiles</label></div>
-    <div class="diag-toggle diag-sub" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> labels</label></div>
-    <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
-    <div class="diag-toggle diag-sub" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
-    <div class="diag-toggle diag-sub" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
-    <div class="diag-toggle" title="Real 3D terrain: map.setTerrain() displacing a Mapterhorn terrarium DEM mesh, hillshade draped on top, over the demotiles watercolor PMTiles (Innsbruck region &mdash; the CORS-open mirror of the Cooper Hewitt tiles). Zoom into the mercator band and pitch (right-drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain</label></div>
+    <div id="diag-lbl-graticule-row" class="diag-toggle diag-sub" style="display:none" title="Graticule line labels (meridian/parallel degree values, line-following along bowing meridians). Overture basemap only. Off by default (?lbl-graticule=1)."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> labels</label></div>
+    <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
+    <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any basemap. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any basemap &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
+    <div class="diag-section">relief <span style="opacity:.6">(pick one; drapes the basemap)</span></div>
+    <div class="diag-toggle" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with shade. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><label for="diag-terrain"><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
     <div id="diag-terrain-exag" class="diag-toggle diag-sub" style="display:none" title="3D terrain vertical exaggeration (map.setTerrain exaggeration). Live-updates, no reload; ?exag= persists in the URL. 1.0 = true scale.">
         <label>exag <input type="range" id="diag-exag" min="0" max="5" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-exag-val">1.5</span></label>
     </div>
+    <div class="diag-toggle" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain."><label for="diag-shade"><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label></div>
+    <div class="diag-section">basemap <span style="opacity:.6">(one, or none)</span></div>
+    <div class="diag-toggle" title="Local Natural Earth land polygons (network-free default). Uncheck for no basemap &mdash; bare relief/overlays over the projection outline (?source=none)."><label for="diag-default"><input type="checkbox" id="diag-default" disabled /> NE land</label></div>
+    <div class="diag-toggle" title="Stamen Watercolor basemap (Cooper Hewitt / Smithsonian re-host). Default source = demotiles pmtiles mirror (Alps region, z5+, keyless); ?watercolor=<proxy-url> points at a CORS-adding proxy of the global tiles (the raw Cooper Hewitt endpoint is CORS-blocked). ?source=watercolor."><label for="diag-watercolor"><input type="checkbox" id="diag-watercolor" disabled /> watercolor</label></div>
+    <div class="diag-toggle" title="Natural Earth 110m admin-0 countries, colored by SOVEREIGNT (deterministic OKLCH hue per country; hover a country for its name)."><label for="diag-choropleth"><input type="checkbox" id="diag-choropleth" disabled /> choropleth</label></div>
+    <div class="diag-toggle" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><label for="diag-demotiles"><input type="checkbox" id="diag-demotiles" disabled /> demotiles</label></div>
+    <div id="diag-lbl-demotiles-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> labels</label></div>
+    <div class="diag-toggle" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><label for="diag-overture"><input type="checkbox" id="diag-overture" disabled /> overture</label></div>
+    <div id="diag-lbl-divisions-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
+    <div id="diag-lbl-roads-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
     <div class="diag-toggle" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><label for="diag-hexbins"><input type="checkbox" id="diag-hexbins" disabled /> hexbins</label></div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
@@ -221,13 +224,24 @@
     // provider-v2 stress this mode exists to exercise.
     const useOverture = params.get('source') === 'overture';
 
-    // Terrain/hillshade attempt (owner request, 2026-07-23): global
-    // Mapterhorn terrarium DEM (hosted XYZ, CORS-open) driving a hillshade
-    // layer, blended over the demotiles watercolor PMTiles archive
-    // (Innsbruck region, maxzoom 11). The Cooper Hewitt global watercolor
-    // endpoint serves NO CORS headers and is browser-blocked from this
-    // origin — the demotiles archive is its usable regional mirror.
-    const useTerrain = params.get('source') === 'terrain';
+    // Watercolor basemap (?source=watercolor). Stamen Watercolor via the
+    // Smithsonian / Cooper Hewitt FOSS re-host. That global endpoint
+    // (watercolormaps.collection.cooperhewitt.org) serves NO CORS headers, so
+    // WebGL can't texture it directly; the opt-in ?watercolor= param points at
+    // a CORS-adding proxy of it (see docs/... nginx snippet) for true global
+    // coverage. Unset -> the demotiles pmtiles mirror (keyless, CORS-clean,
+    // Alps region only, z5+). See watercolorSource() below.
+    const useWatercolor = params.get('source') === 'watercolor';
+    const watercolorProxyUrl = params.get('watercolor');
+    // "no basemap": background + graticule only, so relief (terrain/shade) can
+    // be shown over bare ground (owner request — turn off the default NE land).
+    const useNoBasemap = params.get('source') === 'none';
+
+    // 3D terrain is now a RELIEF MODIFIER (?terrain=1), not a basemap: it
+    // drapes whatever basemap is active over a real Mapterhorn DEM mesh via
+    // map.setTerrain(). Mutually exclusive with `shade` (both are relief from
+    // the same DEM). Back-compat: the old ?source=terrain still turns it on.
+    let terrainOn = params.get('terrain') === '1' || params.get('source') === 'terrain';
 
     // ---- Hexagonal-bin basemap (owner request, 2026-07-23) --------------
     // Uber H3 cells, earth-fixed and seam-proof. The first cut was a
@@ -1315,83 +1329,77 @@
         };
     }
 
-    function buildTerrainStyle() {
-        ensurePmtilesProtocol();
+    // Mapterhorn terrarium DEM. One config, reused by the `shade` hillshade
+    // (source id 'mapterhorn') and the 3D-terrain modifier (a SEPARATE id
+    // 'mapterhorn-terrain' -- MapLibre warns if one source feeds both a
+    // hillshade layer and setTerrain; same tiles, so the HTTP cache serves the
+    // second copy without extra network). Both are injected on demand by the
+    // relief modifiers, so terrain/shade drape over any basemap.
+    const MAPTERHORN_DEM = {
+        type: 'raster-dem',
+        tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+        tileSize: 512, encoding: 'terrarium', maxzoom: 12, attribution: '© Mapterhorn'
+    };
+
+    // Watercolor raster source. ?watercolor=<url> opts into a global proxy
+    // (a CORS-adding reverse proxy of the Cooper Hewitt / Stamen tiles -- the
+    // raw endpoint is CORS-blocked so WebGL can't texture it); unset falls back
+    // to the demotiles pmtiles mirror (keyless, CORS-clean, Alps region z5+).
+    // Degrade-don't-break: a shared copy with no proxy still renders regionally.
+    function watercolorSource() {
+        if (watercolorProxyUrl) {
+            return {type: 'raster', tiles: [watercolorProxyUrl], tileSize: 256, maxzoom: 16,
+                attribution: 'Stamen Watercolor / Cooper Hewitt (Smithsonian)'};
+        }
+        return {type: 'raster', url: 'pmtiles://https://demotiles.maplibre.org/pmtiles/raster/watercolor.pmtiles',
+            tileSize: 512, minzoom: 5, attribution: '© Stamen (demotiles mirror)'};
+    }
+
+    // Shared scaffold: background + polar caps + graticule, the common frame a
+    // basemap builds on -- and the whole of the "no basemap" style, so relief
+    // and overlays can be shown over bare ground.
+    function baseScaffold(extraSources, extraLayers) {
         return {
             version: 8,
             projection: projectionSpec(),
             sources: {
-                mapterhorn: {
-                    type: 'raster-dem',
-                    tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
-                    tileSize: 512,
-                    encoding: 'terrarium',
-                    maxzoom: 12,
-                    attribution: '© Mapterhorn'
-                },
-                // Dedicated DEM source for map.setTerrain(), separate from the
-                // hillshade layer's `mapterhorn` source: MapLibre warns when
-                // one source feeds both a hillshade layer and 3D terrain
-                // (their tile-sampling needs differ). Same tiles, so the
-                // browser HTTP cache serves the second request without extra
-                // network.
-                'mapterhorn-terrain': {
-                    type: 'raster-dem',
-                    tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
-                    tileSize: 512,
-                    encoding: 'terrarium',
-                    maxzoom: 12,
-                    attribution: '© Mapterhorn'
-                },
-                watercolor: {
-                    type: 'raster',
-                    url: 'pmtiles://https://demotiles.maplibre.org/pmtiles/raster/watercolor.pmtiles',
-                    tileSize: 512
-                },
-                // Global Sentinel-2 cloudless imagery (EOX; CORS reflects
-                // the origin — verified). WMTS path order is z/y/x.
-                s2cloudless: {
-                    type: 'raster',
-                    tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg'],
-                    tileSize: 256,
-                    maxzoom: 14,
-                    attribution: 'Sentinel-2 cloudless by <a href="https://s2maps.eu">EOX</a>'
-                },
                 'polar-caps': {type: 'geojson', data: polarCaps},
-                graticule: {type: 'geojson', data: graticule}
+                graticule: {type: 'geojson', data: graticule},
+                ...extraSources
             },
             layers: [
                 {id: 'background', type: 'background', paint: {'background-color': '#a4c8e1'}},
                 ...polarCapLayers('#e8ecef', '#a4c8e1'),
-                {id: 's2-imagery', type: 'raster', source: 's2cloudless', paint: {'raster-opacity': 0.9}},
-                {id: 'watercolor', type: 'raster', source: 'watercolor', minzoom: 5, paint: {'raster-opacity': 0.9}},
-                {id: 'hillshade', type: 'hillshade', source: 'mapterhorn', paint: {
-                    'hillshade-exaggeration': 0.5,
-                    'hillshade-shadow-color': '#47597a',
-                    'hillshade-highlight-color': '#fefaf2'
-                }},
+                ...extraLayers,
                 {id: 'graticule', type: 'line', source: 'graticule', paint: {'line-color': '#7a9cb8', 'line-width': 0.6}}
             ]
         };
     }
 
-    // Real 3D terrain (map.setTerrain) is a per-style side effect, not part of
-    // the style JSON: setStyle resets it, so it is (re)applied after each style
-    // load when terrain mode is active and cleared otherwise. The DEM source
-    // ('mapterhorn') exists only in the terrain style, so setTerrain is only
-    // ever called for that mode; clearing (setTerrain(null)) is safe from any
-    // style. Inline styles fire style.load synchronously inside setStyle (see
-    // the clip one-shot below), so isStyleLoaded() is usually already true; the
-    // once('style.load') fallback covers the async (URL) demotiles style too.
-    function applyTerrain(mode) {
-        // apply() is gated on the DEM source EXISTING, not on isStyleLoaded():
-        // a live mode-switch applies the new style as a diff, which adds the
-        // 'mapterhorn' source synchronously but leaves isStyleLoaded() false
-        // (tiles still loading) AND never fires 'style.load' (that only fires
-        // on a full reload). Gating on the source is correct for every path.
+    function buildWatercolorStyle() {
+        ensurePmtilesProtocol();
+        return baseScaffold(
+            {watercolor: watercolorSource()},
+            [{id: 'watercolor', type: 'raster', source: 'watercolor', paint: {'raster-opacity': 1.0}}]
+        );
+    }
+
+    function buildBlankStyle() {
+        return baseScaffold({}, []);
+    }
+
+    // 3D terrain is a RELIEF MODIFIER over whatever basemap is active, not its
+    // own style. setStyle resets terrain, so this is re-applied after every
+    // style load (alongside applyExtraOverlays) and cleared when terrainOn is
+    // false. It injects the dedicated DEM source into the current style if
+    // missing, then map.setTerrain(). Gated on isStyleLoaded() (addSource needs
+    // a loaded style); the styledata fallback catches the live diff-swap path,
+    // which leaves isStyleLoaded() briefly false and never fires 'style.load'.
+    function applyTerrain() {
         const apply = () => {
-            if (mode === 'terrain') {
-                if (!map.getSource('mapterhorn-terrain')) return false; // DEM not in place yet
+            if (terrainOn) {
+                if (!map.isStyleLoaded()) return false;
+                if (!map.getSource('mapterhorn-terrain')) map.addSource('mapterhorn-terrain', MAPTERHORN_DEM);
                 map.setTerrain({source: 'mapterhorn-terrain', exaggeration: terrainExag});
             } else if (map.getTerrain()) {
                 map.setTerrain(null);
@@ -1399,21 +1407,37 @@
             return true;
         };
         if (apply()) return;
-        // Terrain style still loading its source (full async reload): apply
-        // once it appears. styledata fires for both full loads and diff
-        // updates, so it catches the cases style.load misses.
-        const onData = () => { if (apply()) map.off('styledata', onData); };
-        map.on('styledata', onData);
+        // Not ready (style still loading). Retry on both styledata (fires
+        // during a live diff-swap) and idle (fires once the initial/URL style
+        // is fully loaded, by which point isStyleLoaded() is true) -- the
+        // initial inline load fires style.load synchronously inside setStyle,
+        // before this page's style.load handler exists, so idle is the
+        // reliable catch for it.
+        const retry = () => { if (apply()) { map.off('styledata', retry); map.off('idle', retry); } };
+        map.on('styledata', retry);
+        map.on('idle', retry);
     }
 
+    // `mode` here is the BASEMAP: default (NE land) / watercolor / choropleth /
+    // demotiles / overture / hexbins / none. Terrain and shade are relief
+    // MODIFIERS re-applied on top (applyTerrain / applyExtraOverlays), not
+    // basemaps, so they survive a basemap swap.
     async function applyStyle(mode) {
+        // Clear terrain BEFORE swapping styles. Terrain now persists across
+        // basemap swaps (it's a modifier), but leaving it active through the
+        // swap lets the terrain depth pass (drawDepth) render a transitional
+        // frame where painter.style.projection is briefly undefined -> a
+        // `shaderPreludeCode` crash. applyTerrain() re-adds it once the new
+        // style (and its projection) is fully loaded.
+        if (map.getTerrain()) map.setTerrain(null);
         if (mode === 'hexbins') map.setStyle(await buildHexbinStyle());
-        else if (mode === 'terrain') map.setStyle(buildTerrainStyle());
+        else if (mode === 'watercolor') map.setStyle(buildWatercolorStyle());
         else if (mode === 'overture') map.setStyle(buildOvertureStyle());
         else if (mode === 'demotiles') map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
         else if (mode === 'choropleth') map.setStyle(await buildChoroplethStyle());
+        else if (mode === 'none') map.setStyle(buildBlankStyle());
         else map.setStyle(await buildLandStyle());
-        applyTerrain(mode);
+        applyTerrain();
     }
 
     // `transformStyle` is a `setStyle()` option, not a Map constructor
@@ -1452,7 +1476,7 @@
             map.jumpTo({zoom: params.has('zoom') ? zoom : 0});
         });
     }
-    const initialMode = useHexbins ? 'hexbins' : useTerrain ? 'terrain' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : useChoropleth ? 'choropleth' : 'default';
+    const initialMode = useHexbins ? 'hexbins' : useWatercolor ? 'watercolor' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : useChoropleth ? 'choropleth' : useNoBasemap ? 'none' : 'default';
     await applyStyle(initialMode);
     window.map = map;
 
@@ -1597,15 +1621,20 @@
     // have no layers present and the checkbox is disabled. State is
     // URL-round-tripped like the other toggles (default on; `<param>=0`
     // opts out) so headless label-isolation runs can pin it.
+    // Each label sub-toggle lives in a .diag-sub row (rowId) shown only when
+    // its owning basemap is active (panel cleanup — like z_a/z_b and exag).
+    // defaultOn: demotiles/overture labels default on (<param>=0 opts out);
+    // graticule labels default OFF (owner request — ?lbl-graticule=1 opts in).
     const LABEL_DATASETS = {
-        demotiles: {checkboxId: 'diag-lbl-demotiles', param: 'lbl-demotiles', mode: 'demotiles', layers: ['countries-label', 'geolines-label']},
-        divisions: {checkboxId: 'diag-lbl-divisions', param: 'lbl-divisions', mode: 'overture', layers: ['country-labels', 'region-labels', 'locality-labels']},
-        roads: {checkboxId: 'diag-lbl-roads', param: 'lbl-roads', mode: 'overture', layers: ['road-labels']},
-        graticule: {checkboxId: 'diag-lbl-graticule', param: 'lbl-graticule', mode: 'overture', layers: ['graticule-labels']}
+        demotiles: {checkboxId: 'diag-lbl-demotiles', rowId: 'diag-lbl-demotiles-row', param: 'lbl-demotiles', mode: 'demotiles', layers: ['countries-label', 'geolines-label'], defaultOn: true},
+        divisions: {checkboxId: 'diag-lbl-divisions', rowId: 'diag-lbl-divisions-row', param: 'lbl-divisions', mode: 'overture', layers: ['country-labels', 'region-labels', 'locality-labels'], defaultOn: true},
+        roads: {checkboxId: 'diag-lbl-roads', rowId: 'diag-lbl-roads-row', param: 'lbl-roads', mode: 'overture', layers: ['road-labels'], defaultOn: true},
+        graticule: {checkboxId: 'diag-lbl-graticule', rowId: 'diag-lbl-graticule-row', param: 'lbl-graticule', mode: 'overture', layers: ['graticule-labels'], defaultOn: false}
     };
     const labelDatasetOn = {};
     for (const key of Object.keys(LABEL_DATASETS)) {
-        labelDatasetOn[key] = params.get(LABEL_DATASETS[key].param) !== '0';
+        const ds = LABEL_DATASETS[key];
+        labelDatasetOn[key] = ds.defaultOn ? params.get(ds.param) !== '0' : params.get(ds.param) === '1';
     }
 
     function applyLabelVisibility() {
@@ -1766,6 +1795,7 @@
         applyLabelVisibility();
         applyGraticuleVisibility();
         applyExtraOverlays();
+        applyTerrain();
     });
 
     // Mode toggles write themselves back into the URL (replaceState, no
@@ -1789,6 +1819,7 @@
         const choroplethCheckbox = document.getElementById('diag-choropleth');
         const demotilesCheckbox = document.getElementById('diag-demotiles');
         const overtureCheckbox = document.getElementById('diag-overture');
+        const watercolorCheckbox = document.getElementById('diag-watercolor');
         const terrainCheckbox = document.getElementById('diag-terrain');
         const hexbinsCheckbox = document.getElementById('diag-hexbins');
 
@@ -1870,23 +1901,44 @@
             setUrlParam('zb', zB === DEFAULT_ZB ? null : zB.toFixed(1));
         });
 
-        // 3D-terrain exaggeration slider: mirrors z_a/z_b exactly -- a
-        // .diag-sub row shown ONLY in its owning mode (terrain), live-updating
-        // map.setTerrain with URL persist. Because it is hidden off-terrain it
-        // costs nothing against the E8 default-panel budget (E8 loads with
-        // terrain off), the same reason z_a/z_b don't. refreshTerrainExagRow
-        // is also called from refreshStyleFromCheckboxes so toggling the
-        // terrain data-layer shows/hides it live.
+        // --- Relief: terrain (3D) XOR shade (2D), each draping the active
+        // basemap. Both re-apply across basemap swaps (applyTerrain /
+        // applyExtraOverlays on style.load). Mutually exclusive: turning one on
+        // turns the other off. The exag row is a .diag-sub shown only when
+        // terrain is on (like z_a/z_b), so it costs nothing against the E8
+        // default-panel budget.
+        const shadeCheckbox = document.getElementById('diag-shade');
         const terrainExagRow = document.getElementById('diag-terrain-exag');
         const exagSlider = document.getElementById('diag-exag');
         const exagVal = document.getElementById('diag-exag-val');
         exagSlider.value = terrainExag;
         exagVal.textContent = terrainExag.toFixed(1);
         function refreshTerrainExagRow() {
-            const on = terrainCheckbox.checked;
-            terrainExagRow.style.display = on ? '' : 'none';
-            exagSlider.disabled = !on;
+            terrainExagRow.style.display = terrainOn ? '' : 'none';
+            exagSlider.disabled = !terrainOn;
         }
+        if (terrainOn) shadeOn = false; // relief is exclusive; terrain wins at init
+        terrainCheckbox.disabled = false;
+        shadeCheckbox.disabled = false;
+        terrainCheckbox.checked = terrainOn;
+        shadeCheckbox.checked = shadeOn;
+        terrainCheckbox.addEventListener('change', () => {
+            terrainOn = terrainCheckbox.checked;
+            if (terrainOn && shadeOn) { // relief is exclusive
+                shadeOn = false; shadeCheckbox.checked = false; setUrlParam('shade', null); applyExtraOverlays();
+            }
+            setUrlParam('terrain', terrainOn ? '1' : null);
+            refreshTerrainExagRow();
+            applyTerrain();
+        });
+        shadeCheckbox.addEventListener('change', () => {
+            shadeOn = shadeCheckbox.checked;
+            if (shadeOn && terrainOn) {
+                terrainOn = false; terrainCheckbox.checked = false; setUrlParam('terrain', null); refreshTerrainExagRow(); applyTerrain();
+            }
+            setUrlParam('shade', shadeOn ? '1' : null);
+            applyExtraOverlays();
+        });
         let terrainUpdatePending = false;
         exagSlider.addEventListener('input', () => {
             terrainExag = parseFloat(exagSlider.value);
@@ -1895,7 +1947,7 @@
             terrainUpdatePending = true;
             requestAnimationFrame(() => {
                 terrainUpdatePending = false;
-                if (terrainCheckbox.checked && map.getTerrain()) {
+                if (terrainOn && map.getTerrain()) {
                     map.setTerrain({source: 'mapterhorn-terrain', exaggeration: terrainExag});
                 }
             });
@@ -1905,10 +1957,9 @@
         });
         refreshTerrainExagRow();
 
-        // Cross-dataset overlays: coast / shade / image (one shared row).
+        // Cross-basemap overlays: coast / image (shade is now a relief toggle).
         for (const [id, param, get, set] of [
             ['diag-coast', 'coast', () => coastOn, (v) => { coastOn = v; }],
-            ['diag-shade', 'shade', () => shadeOn, (v) => { shadeOn = v; }],
             ['diag-image', 'image', () => imageOn, (v) => { imageOn = v; }]
         ]) {
             const box = document.getElementById(id);
@@ -1959,24 +2010,21 @@
             setUrlParam('clip', on ? null : '0');
         });
 
-        // Data layers are a radio group (panel restructure): exactly one
-        // checked; "default" is the local land style.
+        // Basemap: single-select, but fully deselectable (uncheck the active
+        // one -> no basemap, bare relief/overlays). Terrain and shade are NOT
+        // here -- they're relief modifiers wired above.
         defaultCheckbox.disabled = false;
+        watercolorCheckbox.disabled = false;
         choroplethCheckbox.disabled = false;
         demotilesCheckbox.disabled = false;
         overtureCheckbox.disabled = false;
-        terrainCheckbox.disabled = false;
         hexbinsCheckbox.disabled = false;
-        choroplethCheckbox.checked = useChoropleth && !useDemotiles && !useOverture && !useTerrain && !useHexbins;
+        watercolorCheckbox.checked = useWatercolor;
+        choroplethCheckbox.checked = useChoropleth && !useWatercolor && !useDemotiles && !useOverture && !useHexbins;
         demotilesCheckbox.checked = useDemotiles;
         overtureCheckbox.checked = useOverture;
-        terrainCheckbox.checked = useTerrain;
         hexbinsCheckbox.checked = useHexbins;
-        defaultCheckbox.checked = !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useTerrain && !useHexbins;
-        // Authoritative initial visibility now that terrainCheckbox.checked
-        // reflects the URL (the call inside the exag-slider block above ran
-        // before this assignment, when .checked was still the HTML default).
-        refreshTerrainExagRow();
+        defaultCheckbox.checked = !useNoBasemap && !watercolorCheckbox.checked && !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useHexbins;
 
         // Hexbin regeneration: rebuild on zoom-bucket change or viewport
         // move beyond z3, throttled by moveend. H3 cells are earth-fixed
@@ -2043,10 +2091,16 @@
                 setUrlParam(dataset.param, checkbox.checked ? null : '0');
             });
         }
+        // Label sub-rows are shown ONLY while their owning basemap is active
+        // (panel cleanup); the checkbox is also enabled/disabled to match.
         function refreshLabelCheckboxEnablement() {
             const activeMode = overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null;
             for (const key of Object.keys(LABEL_DATASETS)) {
-                document.getElementById(LABEL_DATASETS[key].checkboxId).disabled = LABEL_DATASETS[key].mode !== activeMode;
+                const ds = LABEL_DATASETS[key];
+                const active = ds.mode === activeMode;
+                const row = document.getElementById(ds.rowId);
+                if (row) row.style.display = active ? '' : 'none';
+                document.getElementById(ds.checkboxId).disabled = !active;
             }
             graticuleCheckbox.disabled = demotilesCheckbox.checked;
         }
@@ -2055,31 +2109,33 @@
 
         function activeDataMode() {
             if (hexbinsCheckbox.checked) return 'hexbins';
-            if (terrainCheckbox.checked) return 'terrain';
+            if (watercolorCheckbox.checked) return 'watercolor';
             if (overtureCheckbox.checked) return 'overture';
             if (demotilesCheckbox.checked) return 'demotiles';
             if (choroplethCheckbox.checked) return 'choropleth';
-            return 'default';
+            if (defaultCheckbox.checked) return 'default';
+            return 'none';
         }
         function refreshStyleFromCheckboxes() {
             const mode = activeDataMode();
             applyStyle(mode).catch(console.error);
             refreshLabelCheckboxEnablement();
-            refreshTerrainExagRow();
-            setUrlParam('source', (mode === 'hexbins' || mode === 'terrain' || mode === 'overture' || mode === 'demotiles') ? mode : null);
+            // `source` carries every basemap except the implicit `default`
+            // (no param) and `choropleth` (kept on its own ?choropleth= for
+            // back-compat). `none` is an explicit deselect.
+            setUrlParam('source', (mode === 'hexbins' || mode === 'watercolor' || mode === 'overture' || mode === 'demotiles' || mode === 'none') ? mode : null);
             setUrlParam('choropleth', mode === 'choropleth' ? '1' : null);
         }
-        // Radio-group behavior: checking any data layer unchecks the rest;
-        // unchecking the active one directly falls back to "default".
-        const dataLayerCheckboxes = [defaultCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, terrainCheckbox, hexbinsCheckbox];
-        for (const checkbox of dataLayerCheckboxes) {
+        // Basemap radio-group: checking one unchecks the rest; unchecking the
+        // active one leaves NO basemap (owner request -- turn off NE land),
+        // not a fall-back to default.
+        const basemapCheckboxes = [defaultCheckbox, watercolorCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, hexbinsCheckbox];
+        for (const checkbox of basemapCheckboxes) {
             checkbox.addEventListener('change', () => {
                 if (checkbox.checked) {
-                    for (const other of dataLayerCheckboxes) {
+                    for (const other of basemapCheckboxes) {
                         if (other !== checkbox) other.checked = false;
                     }
-                } else {
-                    defaultCheckbox.checked = true;
                 }
                 refreshStyleFromCheckboxes();
             });
