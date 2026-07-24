@@ -816,18 +816,22 @@
     // skill's pairwise-CVD check at 171 categories and leaned on the hover
     // tooltip as its ONLY identity channel.
     //
-    // The 7 fill colours are a purpose-built OKLCH palette, optimised for
-    // all-pairs separation and validated with the skill's own
-    // scripts/validate_palette.js against the #a4c8e1 ocean surface:
-    //   worst all-pairs CVD ΔE 10.0 (>= 8 target), normal-vision 16.1
-    //   (>= 15 hard floor), each colour >= 16 from the ocean and >= 23 from
-    //   the land green -- so islands read by fill, not only by the outline.
-    // MAPCOLOR's adjacency guarantee means the 21 value-pairs only need
-    // mutual distinctness (which they pass), not the impossible 171-way
-    // separation the old scheme attempted. Colour is a fixed attribute of the
-    // value, not an index into a per-file sorted list, so nothing shifts when
-    // the zoom band swaps the source data.
-    const MAPCOLOR7_PALETTE = ['#753891', '#25b898', '#b790fb', '#b84a6d', '#266e16', '#bd8c46', '#5476cf'];
+    // The 7 fill colours are ColorBrewer's "Dark2" qualitative palette (owner
+    // choice 2026-07-24). Dark2 is designed for ADJACENT distinctness in
+    // typical categorical charts, not all-pairs separation, so against the
+    // dataviz skill's validate_palette.js on the #a4c8e1 ocean surface it does
+    // NOT clear the all-pairs floors -- worst pairs are pink<->teal (deutan
+    // ΔE 1.7) and brown<->orange (normal ΔE 9.9). That is acceptable HERE
+    // because of two non-colour channels the map already carries: every
+    // country is stroked with the #4d4d4d choropleth-outline, so a border
+    // stays visible even where two fills collide under CVD, and the hover
+    // tooltip carries identity. (A purpose-built OKLCH set that DID clear
+    // all-pairs -- worst CVD ΔE 10.0 / normal 16.1 -- is in git history at
+    // the previous commit if a colourblind-safe default is ever wanted; swap
+    // it back and re-run the validator.) Colour is a fixed attribute of the
+    // MAPCOLOR7 value, not an index into a per-file sorted list, so nothing
+    // shifts when the zoom band swaps the source data.
+    const MAPCOLOR7_PALETTE = ['#1b9e77', '#d95f02', '#7570b3', '#e7298a', '#66a61e', '#e6ab02', '#a6761d'];
     // Match the integer MAPCOLOR7 (1..7) to its palette slot; grey fallback
     // for a would-be unassigned feature (none in NE admin-0 -- defensive).
     const choroplethFillColor = ['match', ['get', 'MAPCOLOR7'],
