@@ -166,17 +166,34 @@ export class EqualEarthTransform implements ITransform {
     setRenderWorldCopies(renderWorldCopies: boolean): void {
         this._helper.setRenderWorldCopies(renderWorldCopies);
     }
+    // Set by EqualEarthAdaptiveTransform on its internal EE child. That
+    // composite feeds this child the (eeness-decayed) camera pitch/bearing/
+    // roll every frame for Z-sync and matrix bookkeeping; the child correctly
+    // clamps them to 0 (EE geometry is top-down), but here that clamp is
+    // by-design internal state, NOT a user action, so the warning must stay
+    // silent — otherwise every pitched frame in adaptive mode (pitch is fully
+    // honored in the mercator band, decaying to 0 only at pure EE) logs a
+    // misleading "pitch clamped" warning. A standalone `equal-earth` map, and
+    // the adaptive transform's OWN setPitch/apply, are unaffected: the tilt is
+    // still clamped and still warned there.
+    private _isAdaptiveChild = false;
+    public markAsAdaptiveChild(): void {
+        this._isAdaptiveChild = true;
+    }
+    private _warnCameraClamp(): void {
+        if (!this._isAdaptiveChild) warnOnce(EE_CAMERA_CLAMP_WARNING);
+    }
     setBearing(bearing: number): void {
         // Clamp-and-document camera posture — see EE_CAMERA_CLAMP_WARNING.
-        if (bearing !== 0) warnOnce(EE_CAMERA_CLAMP_WARNING);
+        if (bearing !== 0) this._warnCameraClamp();
         this._helper.setBearing(0);
     }
     setPitch(pitch: number): void {
-        if (pitch !== 0) warnOnce(EE_CAMERA_CLAMP_WARNING);
+        if (pitch !== 0) this._warnCameraClamp();
         this._helper.setPitch(0);
     }
     setRoll(roll: number): void {
-        if (roll !== 0) warnOnce(EE_CAMERA_CLAMP_WARNING);
+        if (roll !== 0) this._warnCameraClamp();
         this._helper.setRoll(0);
     }
     setFov(fov: number): void {
@@ -380,7 +397,7 @@ export class EqualEarthTransform implements ITransform {
         // for a tilted camera when switching projections (e.g. mercator →
         // equal-earth via setProjection). Clamp them here too.
         if (this.pitch !== 0 || this.bearing !== 0 || this.roll !== 0) {
-            warnOnce(EE_CAMERA_CLAMP_WARNING);
+            this._warnCameraClamp();
             this._helper.setPitch(0);
             this._helper.setBearing(0);
             this._helper.setRoll(0);

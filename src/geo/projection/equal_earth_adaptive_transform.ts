@@ -333,6 +333,12 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         this._eeness = 1; // Symbol-placement clones never see _updateAnimation; match GlobeTransform's convention.
         this._mercatorTransform = new MercatorTransform();
         this._equalEarthTransform = new EqualEarthTransform();
+        // This EE transform is an internal child fed the decayed camera
+        // angles every frame; it clamps them to 0 by design, so silence the
+        // clamp warning it would otherwise log on every pitched frame (the
+        // adaptive transform's own clamp/warn, and a standalone equal-earth
+        // map, still warn a real user who tilts).
+        this._equalEarthTransform.markAsAdaptiveChild();
     }
 
     clone(): ITransform {

@@ -1330,6 +1330,20 @@
                     maxzoom: 12,
                     attribution: '© Mapterhorn'
                 },
+                // Dedicated DEM source for map.setTerrain(), separate from the
+                // hillshade layer's `mapterhorn` source: MapLibre warns when
+                // one source feeds both a hillshade layer and 3D terrain
+                // (their tile-sampling needs differ). Same tiles, so the
+                // browser HTTP cache serves the second request without extra
+                // network.
+                'mapterhorn-terrain': {
+                    type: 'raster-dem',
+                    tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+                    tileSize: 512,
+                    encoding: 'terrarium',
+                    maxzoom: 12,
+                    attribution: '© Mapterhorn'
+                },
                 watercolor: {
                     type: 'raster',
                     url: 'pmtiles://https://demotiles.maplibre.org/pmtiles/raster/watercolor.pmtiles',
@@ -1378,8 +1392,8 @@
         // on a full reload). Gating on the source is correct for every path.
         const apply = () => {
             if (mode === 'terrain') {
-                if (!map.getSource('mapterhorn')) return false; // DEM not in place yet
-                map.setTerrain({source: 'mapterhorn', exaggeration: terrainExag});
+                if (!map.getSource('mapterhorn-terrain')) return false; // DEM not in place yet
+                map.setTerrain({source: 'mapterhorn-terrain', exaggeration: terrainExag});
             } else if (map.getTerrain()) {
                 map.setTerrain(null);
             }
@@ -1865,7 +1879,7 @@
             requestAnimationFrame(() => {
                 terrainUpdatePending = false;
                 if (terrainCheckbox.checked && map.getTerrain()) {
-                    map.setTerrain({source: 'mapterhorn', exaggeration: terrainExag});
+                    map.setTerrain({source: 'mapterhorn-terrain', exaggeration: terrainExag});
                 }
             });
         });
