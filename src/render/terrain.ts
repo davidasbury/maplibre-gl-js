@@ -14,6 +14,7 @@ import {Mesh} from './mesh.ts';
 import {isInBoundsForZoomLngLat} from '../util/world_bounds.ts';
 import {NORTH_POLE_Y, SOUTH_POLE_Y} from './subdivision.ts';
 import {coveringTiles} from '../geo/projection/covering_tiles.ts';
+import {VerticalPerspectiveShaderVariantKey} from '../geo/projection/vertical_perspective_projection.ts';
 import type Point from '@mapbox/point-geometry';
 import type {Tile} from '../tile/tile.ts';
 import type {Framebuffer} from '../webgl/framebuffer.ts';
@@ -425,7 +426,16 @@ export class Terrain {
      * @returns the created regular mesh
      */
     getTerrainMesh(tileId: OverscaledTileID): Mesh {
-        const globeEnabled = this.painter.style.projection?.transitionState > 0;
+        // The pole-row pinch mesh below (northPole/southPole) closes globe's
+        // spherical geometry at the poles; it is globe-family only. Keying it on
+        // `transitionState > 0` misfired under Equal Earth adaptive, whose blend
+        // also reports a nonzero transitionState (eeness) but whose poles are
+        // lines, not points — pinching an EE pole-row tile is wrong geometry.
+        // shaderVariantName === 'globe' is the exact "globe geometry is active"
+        // signal: it's 'globe' for globe (transitioned in) and static
+        // vertical-perspective, 'mercator' for globe at transition 0, and
+        // 'mercator'/'equal-earth' for the EE adaptive/static projections.
+        const globeEnabled = this.painter.style.projection?.shaderVariantName === VerticalPerspectiveShaderVariantKey;
         const northPole = globeEnabled && tileId.canonical.y === 0;
         const southPole = globeEnabled && tileId.canonical.y === (1 << tileId.canonical.z) - 1;
         const key = `m_${northPole ? 'n' : ''}_${southPole ? 's' : ''}`;

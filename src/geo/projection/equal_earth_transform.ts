@@ -873,7 +873,21 @@ export class EqualEarthTransform implements ITransform {
         // the same role mercator's `mercatorMatrix` plays for mercator [0..1]
         // coordinates. It is per-frame, not per-tile, so the f32 copy for the
         // shader uniform is derived once here rather than in getProjectionData.
-        this._equalEarthMatrix = mat4.scale([], this._viewProjMatrix, [this.worldSize, this.worldSize, this.worldSize]);
+        //
+        // X/Y scale by worldSize (unit EE coords ~0.5 -> pixel-world); Z scales
+        // by 1, NOT worldSize. The Z input is elevation in *meters* (terrain's
+        // get_elevation, shared across every projection) and _viewProjMatrix
+        // already carries the meters->clip z-scale (pixelPerMeter, applied
+        // above). Scaling Z by worldSize too double-scaled elevation by
+        // worldSize (4096x at z3), exploding terrain geometry the instant
+        // eeness left 0; mercator's per-tile matrix uses a z-scale of exactly 1
+        // (calculateTileMatrix) for the same reason. Harmless to the flat path:
+        // every non-terrain call feeds elevation = 0, so the z-column is unused.
+        // Both the polynomial eePos and the linearized tileMatrix (affine[10]=1
+        // passes elevation straight through as z) funnel elevation through this
+        // z-column, so this one value fixes both paths; quadUV/quadVV read only
+        // the x/y basis columns (m[0..7]) and are unaffected.
+        this._equalEarthMatrix = mat4.scale([], this._viewProjMatrix, [this.worldSize, this.worldSize, 1]);
         this._equalEarthMatrix32f = new Float32Array(this._equalEarthMatrix);
 
         const cameraPos: vec4 = [0, 0, -1, 1];
