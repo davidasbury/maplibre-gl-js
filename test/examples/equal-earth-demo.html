@@ -128,7 +128,11 @@
     <div>proj ratio: <span id="diag-blend">&ndash;</span> <span style="opacity:.6">(EE=1)</span></div>
     <div><span id="diag-tiles">tiles loading&hellip;</span> <span id="diag-tiles-glyph">&#9676;</span></div>
     <div id="diag-gl-row" hidden>gl: <span id="diag-gl">&ndash;</span></div>
-    <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Engine seam-bit stencil clip by default; ?engineclip=0 falls back to the page canvas mask. Also relaxes the zoom floor from pole-fit to outline-fit."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label> <label for="diag-adaptive" title="Stage C: zoom-adaptive projection — Equal Earth below z4, mercator above z6, positional morph between. Disables the antimeridian clip (the seam mask is a pure-EE construct). Reload applies."><input type="checkbox" id="diag-adaptive" disabled /> adaptive</label></div>
+    <div class="diag-toggle" title="Clip content beyond &lambda;0&plusmn;180&deg; to void at the projection outline (the Jenny-demo look; &lambda;0 keeps tracking the pan). Engine seam-bit stencil clip by default; ?engineclip=0 falls back to the page canvas mask. Also relaxes the zoom floor from pole-fit to outline-fit."><label for="diag-clip"><input type="checkbox" id="diag-clip" disabled /> clip antimeridian</label> <label for="diag-adaptive" title="Stage C: zoom-adaptive projection — Equal Earth below z_a, mercator above z_b (defaults 4/6, tunable below), positional morph between. Disables the antimeridian clip (the seam mask is a pure-EE construct). Reload applies."><input type="checkbox" id="diag-adaptive" disabled /> adaptive</label></div>
+    <div id="diag-adaptive-thresholds" class="diag-toggle diag-sub" style="display:none" title="Blend zoom thresholds (Jenny &amp; Savric 2012 adaptive-composite design): pure Equal Earth below z_a, pure mercator above z_b. Live-updates map.setProjection, no reload; ?za=/?zb= persist the values in the URL.">
+        <label>z<sub>a</sub> <input type="range" id="diag-za" min="0" max="10" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-za-val">4.0</span></label><br>
+        <label>z<sub>b</sub> <input type="range" id="diag-zb" min="0" max="10" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-zb-val">6.0</span></label>
+    </div>
     <div class="diag-section">overlays</div>
     <div id="diag-tissot-row" class="diag-toggle" title="Each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><label for="diag-tissot"><input type="checkbox" id="diag-tissot" disabled /> tissot</label> <span style="opacity:.6">(w/h, 1=round)</span></div>
     <div class="diag-toggle" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><label for="diag-graticule"><input type="checkbox" id="diag-graticule" disabled /> graticule</label></div>
@@ -238,10 +242,27 @@
     // would clip mid-morph content. Off by default — it's mutually
     // exclusive with the clip=1 default (the demo's face, owner request).
     const useAdaptive = params.get('adaptive') === '1';
+
+    // Blend-threshold handles (step 13, pre-Bernie-call): z_a/z_b tunable
+    // live via the diag panel sliders (?za=/?zb= persist in the URL) so
+    // the demo can literally show Bojan Savric the transition band
+    // shape, mirroring the handles in Jenny & Savric's own
+    // AdaptiveCompositeMapProjections demo. DEFAULT_ZA/ZB keep dogfooding
+    // the named `equal-earth-adaptive` preset (step 12) at the factory
+    // defaults; only a genuinely custom pair falls back to an explicit
+    // interpolate expression, which the factory routes identically (both
+    // paths verified in the design-proposal's §11 resolution).
+    const DEFAULT_ZA = 4, DEFAULT_ZB = 6;
+    let zA = parseFloat(params.get('za'));
+    let zB = parseFloat(params.get('zb'));
+    if (!(Number.isFinite(zA) && Number.isFinite(zB) && zA < zB)) {
+        zA = DEFAULT_ZA;
+        zB = DEFAULT_ZB;
+    }
     function projectionSpec() {
-        return useAdaptive
-            ? {type: 'equal-earth-adaptive'}
-            : {type: 'equal-earth'};
+        if (!useAdaptive) return {type: 'equal-earth'};
+        if (zA === DEFAULT_ZA && zB === DEFAULT_ZB) return {type: 'equal-earth-adaptive'};
+        return {type: ['interpolate', ['linear'], ['zoom'], zA, 'equal-earth', zB, 'mercator']};
     }
 
     // Minimal EE forward/inverse for page-side grid math — mirrors
@@ -1716,6 +1737,55 @@
             clipCheckbox.checked = false;
             clipCheckbox.disabled = true;
         }
+
+        // Blend-threshold handles (step 13): unlike the adaptive toggle
+        // itself, z_a/z_b are a pure projection-spec change -- no overlay
+        // rebuild needed -- so these update live via map.setProjection,
+        // no reload. Only meaningful (and only shown) in adaptive mode.
+        const thresholdsRow = document.getElementById('diag-adaptive-thresholds');
+        const zaSlider = document.getElementById('diag-za');
+        const zbSlider = document.getElementById('diag-zb');
+        const zaVal = document.getElementById('diag-za-val');
+        const zbVal = document.getElementById('diag-zb-val');
+        const THRESHOLD_MIN_GAP = 0.2;
+        let projectionUpdatePending = false;
+        function scheduleProjectionUpdate() {
+            if (projectionUpdatePending) return;
+            projectionUpdatePending = true;
+            requestAnimationFrame(() => {
+                projectionUpdatePending = false;
+                map.setProjection(projectionSpec());
+            });
+        }
+        if (useAdaptive) {
+            thresholdsRow.style.display = '';
+            zaSlider.disabled = false;
+            zbSlider.disabled = false;
+        }
+        zaSlider.value = zA;
+        zbSlider.value = zB;
+        zaVal.textContent = zA.toFixed(1);
+        zbVal.textContent = zB.toFixed(1);
+        zaSlider.addEventListener('input', () => {
+            let v = parseFloat(zaSlider.value);
+            if (v > zB - THRESHOLD_MIN_GAP) { v = zB - THRESHOLD_MIN_GAP; zaSlider.value = v; }
+            zA = v;
+            zaVal.textContent = zA.toFixed(1);
+            scheduleProjectionUpdate();
+        });
+        zaSlider.addEventListener('change', () => {
+            setUrlParam('za', zA === DEFAULT_ZA ? null : zA.toFixed(1));
+        });
+        zbSlider.addEventListener('input', () => {
+            let v = parseFloat(zbSlider.value);
+            if (v < zA + THRESHOLD_MIN_GAP) { v = zA + THRESHOLD_MIN_GAP; zbSlider.value = v; }
+            zB = v;
+            zbVal.textContent = zB.toFixed(1);
+            scheduleProjectionUpdate();
+        });
+        zbSlider.addEventListener('change', () => {
+            setUrlParam('zb', zB === DEFAULT_ZB ? null : zB.toFixed(1));
+        });
 
         // Cross-dataset overlays: coast / shade / image (one shared row).
         for (const [id, param, get, set] of [
