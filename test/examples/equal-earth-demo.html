@@ -195,15 +195,14 @@
     <div class="diag-section" data-section="overlays" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-overlays">overlays <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-overlays">
         <div class="diag-toggle"><label for="diag-graticule" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><input type="checkbox" id="diag-graticule" disabled /> graticule</label> <label for="diag-tissot" title="Tissot's indicatrix: each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><input type="checkbox" id="diag-tissot" disabled /> tissot</label></div>
-        <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any basemap. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any basemap &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label> <label for="diag-cities" title="Esri World Cities feature service (public, keyless): top 1000 cities by population, queried as GeoJSON points from services.arcgis.com and drawn as circles over any basemap. A georeferencing probe &mdash; points stay pinned to their lng/lat through the equal-earth&harr;mercator morph. ?cities=1."><input type="checkbox" id="diag-cities" disabled /> cities</label></div>
+        <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any basemap. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any basemap &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
     </div>
     <div class="diag-section" data-section="relief" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-relief">relief <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-relief">
-        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with the 2D relief options. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
+        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with shade. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label> <label for="diag-shade" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain."><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label></div>
         <div id="diag-terrain-exag" class="diag-toggle diag-sub" style="display:none" title="3D terrain vertical exaggeration (map.setTerrain exaggeration). Live-updates, no reload; ?exag= persists in the URL. 1.0 = true scale.">
             <label>exag <input type="range" id="diag-exag" min="0" max="5" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-exag-val">1.5</span></label>
         </div>
-        <div class="diag-toggle"><label for="diag-shade" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain and esri hs. ?shade=1."><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label> <label for="diag-esri-hs" title="Esri World Hillshade: 2D relief raster (keyless, services.arcgisonline.com) draped over the active basemap. Mutually exclusive with terrain and shade. ?esrihs=1. Network required."><input type="checkbox" id="diag-esri-hs" disabled /> esri hs <span style="opacity:.6">(2D)</span></label></div>
     </div>
     <div class="diag-section" data-section="basemap" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-basemap">basemap <span style="opacity:.6">(one, or none)</span> <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-basemap">
@@ -218,8 +217,6 @@
                 <div class="diag-toggle"><label for="diag-demotiles" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><input type="radio" name="diag-basemap" id="diag-demotiles" disabled /> demotiles</label></div>
                 <div class="diag-toggle"><label for="diag-overture" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><input type="radio" name="diag-basemap" id="diag-overture" disabled /> overture</label></div>
                 <div class="diag-toggle"><label for="diag-hexbins" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><input type="radio" name="diag-basemap" id="diag-hexbins" disabled /> hexbins</label></div>
-                <div class="diag-toggle"><label for="diag-esri-topo" title="Esri ArcGIS Topographic vector basemap (Basemap Styles API v2), equal-earth applied via transformStyle. Needs an ArcGIS token via ?esritoken= (disabled without one). ?source=esritopo."><input type="radio" name="diag-basemap" id="diag-esri-topo" disabled /> esri topo</label></div>
-                <div class="diag-toggle"><label for="diag-esri-hgeo" title="Esri ArcGIS Human Geography vector basemap (Andrew Skinner's light-gray monochrome design), equal-earth applied via transformStyle. Needs an ArcGIS token via ?esritoken= (disabled without one). ?source=esrihgeo."><input type="radio" name="diag-basemap" id="diag-esri-hgeo" disabled /> esri hgeo</label></div>
             </div>
         </div>
     </div>
@@ -235,7 +232,6 @@
             <div id="diag-lbl-demotiles-row" class="diag-toggle" style="display:none" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> demotiles</label></div>
             <div id="diag-lbl-divisions-row" class="diag-toggle" style="display:none" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
             <div id="diag-lbl-roads-row" class="diag-toggle" style="display:none" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
-            <div id="diag-lbl-esritopo-row" class="diag-toggle" style="display:none" title="Toggle every Esri Topographic label layer (all text symbols in the style)."><label for="diag-lbl-esritopo"><input type="checkbox" id="diag-lbl-esritopo" disabled /> esri topo</label></div>
         </div>
     </div>
 </div>
@@ -340,17 +336,6 @@
     // Earth EE-plane raster elsewhere. Resolution adapts to zoom;
     // generation is limited to the viewport (+margin) beyond z3.
     const useHexbins = params.get('source') === 'hexbins';
-
-    // Esri ArcGIS vector basemaps (owner request 2026-07-25): loaded from the
-    // Basemap Styles API v2 with the `?esritoken=` key. The two radios sit
-    // disabled unless a token is supplied, so the committed public-Pages
-    // default stays keyless (never bake a token). The token is echoed into the
-    // style's glyphs URL but NOT its vector tile / sprite / baked-in hillshade
-    // requests, so the map's transformRequest (below) appends it to every
-    // *.arcgis.com API host (services.arcgisonline.com stays keyless).
-    const esriToken = params.get('esritoken');
-    const useEsriTopo = params.get('source') === 'esritopo';
-    const useEsriHgeo = params.get('source') === 'esrihgeo';
 
     // ---- Stage C adaptive blend (plan step 11, 2026-07-23) --------------
     // `?adaptive=1`: the projection becomes the named `equal-earth-adaptive`
@@ -1267,29 +1252,6 @@
         }
     };
 
-    // Esri ArcGIS vector basemap styles (Basemap Styles API v2). Loaded via
-    // setStyle(url, {transformStyle}) exactly like demotiles -- the fork's
-    // transformStyle injects the equal-earth projection and the §5.5 polar
-    // caps (Esri vector tiles are mercator-cut at ~85°). The token rides in via
-    // the map's transformRequest; the URL only needs it on the initial style
-    // fetch (glyphs are pre-echoed).
-    const ESRI_STYLE_URL = (name) => `https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/arcgis/${name}?token=${encodeURIComponent(esriToken || '')}`;
-    const ESRI_SET_STYLE_OPTIONS = {
-        transformStyle: (_prev, next) => {
-            const backgroundLayer = next.layers.find((l) => l.type === 'background');
-            const ocean = (backgroundLayer && backgroundLayer.paint && backgroundLayer.paint['background-color']) || '#cfe0ec';
-            const backgroundIndex = next.layers.findIndex((l) => l.type === 'background') + 1;
-            const layers = next.layers.slice();
-            layers.splice(backgroundIndex, 0, ...polarCapLayers('#ffffff', ocean));
-            return {
-                ...next,
-                projection: projectionSpec(),
-                sources: {...next.sources, 'polar-caps': {type: 'geojson', data: polarCaps}},
-                layers
-            };
-        }
-    };
-
     // Overture geometry-only style. Layer names and zoom ranges verified
     // against the archives' own vector_layers metadata (2026-06-17.0): base
     // carries land/water/land_cover/land_use/infrastructure/bathymetry
@@ -1587,8 +1549,6 @@
         else if (mode === 'watercolor') map.setStyle(buildWatercolorStyle());
         else if (mode === 'overture') map.setStyle(buildOvertureStyle());
         else if (mode === 'demotiles') map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
-        else if (mode === 'esritopo') map.setStyle(ESRI_STYLE_URL('topographic'), ESRI_SET_STYLE_OPTIONS);
-        else if (mode === 'esrihgeo') map.setStyle(ESRI_STYLE_URL('human-geography'), ESRI_SET_STYLE_OPTIONS);
         else if (mode === 'choropleth') map.setStyle(await buildChoroplethStyle());
         else if (mode === 'none') map.setStyle(buildBlankStyle());
         else map.setStyle(await buildLandStyle());
@@ -1609,19 +1569,7 @@
         container: 'map',
         center: [centerLng, centerLat],
         zoom,
-        pitch: pitchInit,
-        // Append the Esri token to every ArcGIS Basemap-Styles API request
-        // (style/sprite/glyphs/tilejson/tiles + the baked-in ibasemaps
-        // hillshade) that doesn't already carry it. Scoped to the tokenised
-        // API hosts only -- services.arcgisonline.com (the keyless `esri hs`
-        // relief) and every non-Esri source are left untouched. No-op without
-        // a token.
-        transformRequest: esriToken ? (url) => {
-            if (/\/\/(?:basemaps-api|ibasemaps-api|basemapstyles-api)\.arcgis\.com\//.test(url) && !/[?&]token=/.test(url)) {
-                return {url: url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(esriToken)};
-            }
-            return undefined;
-        } : undefined
+        pitch: pitchInit
     });
     let clipOn = false; // live transform state; checkbox wiring still happens at 'load'
     // Clip flags must land on the FIRST styled frame, not at the 'load'
@@ -1643,7 +1591,7 @@
             map.jumpTo({zoom: params.has('zoom') ? zoom : 0});
         });
     }
-    const initialMode = useHexbins ? 'hexbins' : useWatercolor ? 'watercolor' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : (useEsriTopo && esriToken) ? 'esritopo' : (useEsriHgeo && esriToken) ? 'esrihgeo' : useChoropleth ? 'choropleth' : useNoBasemap ? 'none' : 'default';
+    const initialMode = useHexbins ? 'hexbins' : useWatercolor ? 'watercolor' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : useChoropleth ? 'choropleth' : useNoBasemap ? 'none' : 'default';
     await applyStyle(initialMode);
     window.map = map;
 
@@ -1796,13 +1744,7 @@
         demotiles: {checkboxId: 'diag-lbl-demotiles', rowId: 'diag-lbl-demotiles-row', param: 'lbl-demotiles', mode: 'demotiles', layers: ['countries-label', 'geolines-label'], defaultOn: true},
         divisions: {checkboxId: 'diag-lbl-divisions', rowId: 'diag-lbl-divisions-row', param: 'lbl-divisions', mode: 'overture', layers: ['country-labels', 'region-labels', 'locality-labels'], defaultOn: true},
         roads: {checkboxId: 'diag-lbl-roads', rowId: 'diag-lbl-roads-row', param: 'lbl-roads', mode: 'overture', layers: ['road-labels'], defaultOn: true},
-        graticule: {checkboxId: 'diag-lbl-graticule', rowId: 'diag-lbl-graticule-row', param: 'lbl-graticule', mode: 'overture', layers: ['graticule-labels'], defaultOn: false},
-        // Esri Topographic has ~207 label layers whose ids belong to Esri's
-        // style, not ours -- so instead of a static list, collect every symbol
-        // layer that carries a text-field at apply time (collectLayers). Same
-        // toggle behaviour as the others.
-        esritopo: {checkboxId: 'diag-lbl-esritopo', rowId: 'diag-lbl-esritopo-row', param: 'lbl-esritopo', mode: 'esritopo', defaultOn: true,
-            collectLayers: () => (map.getStyle() ? map.getStyle().layers.filter((l) => l.type === 'symbol' && l.layout && l.layout['text-field']).map((l) => l.id) : [])}
+        graticule: {checkboxId: 'diag-lbl-graticule', rowId: 'diag-lbl-graticule-row', param: 'lbl-graticule', mode: 'overture', layers: ['graticule-labels'], defaultOn: false}
     };
     const labelDatasetOn = {};
     for (const key of Object.keys(LABEL_DATASETS)) {
@@ -1812,9 +1754,7 @@
 
     function applyLabelVisibility() {
         for (const key of Object.keys(LABEL_DATASETS)) {
-            const ds = LABEL_DATASETS[key];
-            const layers = ds.collectLayers ? ds.collectLayers() : ds.layers;
-            for (const layerId of layers) {
+            for (const layerId of LABEL_DATASETS[key].layers) {
                 if (map.getLayer(layerId)) {
                     map.setLayoutProperty(layerId, 'visibility', labelDatasetOn[key] ? 'visible' : 'none');
                 }
@@ -1857,28 +1797,7 @@
     //   layers.
     let coastOn = params.get('coast') === '1';
     let shadeOn = params.get('shade') === '1';
-    let esriHsOn = params.get('esrihs') === '1';
     let imageOn = params.get('image') === '1';
-    let citiesOn = params.get('cities') === '1';
-    let citiesApplied = false; // whether the fetched data is in the cities source
-
-    // Esri World Cities: a public (keyless) hosted feature service, queried as
-    // GeoJSON point features (top 1000 by population) and drawn as circles over
-    // any basemap. It is a georeferencing probe as much as a demo layer -- a
-    // point at [lng,lat] must stay pinned to that ground position through the
-    // equal-earth<->mercator adaptive morph, the same transform the camera
-    // uses; the step-15 gate asserts each rendered dot sits exactly at
-    // map.project([lng,lat]) at both projection ends AND mid-blend.
-    const ESRI_CITIES_URL = 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Cities/FeatureServer/0/query?where=1%3D1&outFields=CITY_NAME,POP&orderByFields=POP%20DESC&resultRecordCount=1000&f=geojson&returnGeometry=true';
-    let citiesDataPromise = null;
-    function getCitiesData() {
-        if (!citiesDataPromise) {
-            citiesDataPromise = fetch(ESRI_CITIES_URL)
-                .then((r) => { if (!r.ok) throw new Error(`World Cities: HTTP ${r.status}`); return r.json(); })
-                .catch((e) => { citiesDataPromise = null; throw e; });
-        }
-        return citiesDataPromise;
-    }
 
     const NE_COAST_URL = (scale) => `https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_${scale}_coastline.geojson`;
     const neCoastCache = new Map(); // scale -> Promise<FeatureCollection>
@@ -1944,25 +1863,6 @@
         } else if (map.getLayer('shade-ov')) {
             map.removeLayer('shade-ov');
         }
-        // Esri World Hillshade: a keyless raster tile relief (services.arcgisonline.com),
-        // a 2D alternative to the Mapterhorn `shade` -- reprojected onto the EE plane
-        // by MapLibre like the s2cloudless image overlay. Half-opacity so the basemap
-        // reads through. Relief is 3-way exclusive, so shade and this are never both on.
-        if (esriHsOn) {
-            if (!map.getSource('esri-hillshade')) {
-                map.addSource('esri-hillshade', {
-                    type: 'raster',
-                    tiles: ['https://services.arcgisonline.com/arcgis/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}'],
-                    tileSize: 256, maxzoom: 16,
-                    attribution: 'Hillshade &copy; Esri, USGS, NOAA'
-                });
-            }
-            if (!map.getLayer('esri-hs-ov')) {
-                map.addLayer({id: 'esri-hs-ov', type: 'raster', source: 'esri-hillshade', paint: {'raster-opacity': 0.55}}, beforeGrat);
-            }
-        } else if (map.getLayer('esri-hs-ov')) {
-            map.removeLayer('esri-hs-ov');
-        }
         if (coastOn) {
             if (!map.getSource('ne-coast')) {
                 map.addSource('ne-coast', {type: 'geojson', data: {type: 'FeatureCollection', features: []}});
@@ -1977,36 +1877,6 @@
         } else if (map.getLayer('coast-ov')) {
             map.removeLayer('coast-ov');
         }
-        // Esri World Cities point overlay (topmost data layer, above coast).
-        // Circles sized by population; the projection handles the point
-        // positions, so this doubles as the georeferencing probe. Data is
-        // fetched once and set via setData after the (empty) source exists.
-        if (citiesOn) {
-            if (!map.getSource('cities')) {
-                map.addSource('cities', {type: 'geojson', data: {type: 'FeatureCollection', features: []},
-                    attribution: 'Cities &copy; Esri'});
-                citiesApplied = false; // fresh (empty) source after a style swap
-            }
-            if (!map.getLayer('cities-ov')) {
-                map.addLayer({id: 'cities-ov', type: 'circle', source: 'cities', paint: {
-                    'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, 2, 6, ['interpolate', ['linear'], ['get', 'POP'], 0, 2.5, 10000000, 7]],
-                    'circle-color': '#d7263d',
-                    'circle-stroke-color': '#ffffff',
-                    'circle-stroke-width': 0.8,
-                    'circle-opacity': 0.9
-                }}, beforeGrat);
-            }
-            applyCitiesData().catch(console.error);
-        } else if (map.getLayer('cities-ov')) {
-            map.removeLayer('cities-ov');
-        }
-    }
-    async function applyCitiesData() {
-        if (!citiesOn || citiesApplied || !map.getSource('cities')) return;
-        const data = await getCitiesData();
-        if (!citiesOn || !map.getSource('cities')) return; // style swapped mid-fetch
-        map.getSource('cities').setData(data);
-        citiesApplied = true;
     }
     map.on('zoomend', () => {
         applyNeCoastData().catch(console.error);
@@ -2070,8 +1940,6 @@
         const watercolorCheckbox = document.getElementById('diag-watercolor');
         const terrainCheckbox = document.getElementById('diag-terrain');
         const hexbinsCheckbox = document.getElementById('diag-hexbins');
-        const esriTopoCheckbox = document.getElementById('diag-esri-topo');
-        const esriHgeoCheckbox = document.getElementById('diag-esri-hgeo');
 
         tissotCheckbox.disabled = false;
         tissotCheckbox.checked = useTissot;
@@ -2169,15 +2037,13 @@
             setUrlParam('zb', zB === DEFAULT_ZB ? null : zB.toFixed(1));
         });
 
-        // --- Relief is 3-way exclusive: terrain (3D) / shade (2D) / esri hs
-        // (2D). Each drapes the active basemap and re-applies across basemap
-        // swaps (applyTerrain / applyExtraOverlays on style.load). Turning one
-        // on turns the other two off. terrain uses map.setTerrain(); shade and
-        // esri hs are raster/hillshade layers added by applyExtraOverlays. The
-        // exag row is a .diag-sub shown only when terrain is on (like z_a/z_b),
-        // so it costs nothing against the E8 default-panel budget.
+        // --- Relief: terrain (3D) XOR shade (2D), each draping the active
+        // basemap. Both re-apply across basemap swaps (applyTerrain /
+        // applyExtraOverlays on style.load). Mutually exclusive: turning one on
+        // turns the other off. The exag row is a .diag-sub shown only when
+        // terrain is on (like z_a/z_b), so it costs nothing against the E8
+        // default-panel budget.
         const shadeCheckbox = document.getElementById('diag-shade');
-        const esriHsCheckbox = document.getElementById('diag-esri-hs');
         const terrainExagRow = document.getElementById('diag-terrain-exag');
         const exagSlider = document.getElementById('diag-exag');
         const exagVal = document.getElementById('diag-exag-val');
@@ -2187,48 +2053,26 @@
             terrainExagRow.style.display = terrainOn ? '' : 'none';
             exagSlider.disabled = !terrainOn;
         }
-        // Turn off every relief mode except `keep` (state + checkbox + URL).
-        // Each cleared mode's own apply path runs; the caller then re-applies.
-        function clearOtherRelief(keep) {
-            if (keep !== 'terrain' && terrainOn) {
-                terrainOn = false; terrainCheckbox.checked = false; setUrlParam('terrain', null);
-                refreshTerrainExagRow(); applyTerrain();
-            }
-            if (keep !== 'shade' && shadeOn) {
-                shadeOn = false; shadeCheckbox.checked = false; setUrlParam('shade', null);
-            }
-            if (keep !== 'esrihs' && esriHsOn) {
-                esriHsOn = false; esriHsCheckbox.checked = false; setUrlParam('esrihs', null);
-            }
-        }
-        // Init exclusivity priority if more than one relief param is set:
-        // terrain > shade > esri hs.
-        if (terrainOn) { shadeOn = false; esriHsOn = false; }
-        else if (shadeOn) { esriHsOn = false; }
+        if (terrainOn) shadeOn = false; // relief is exclusive; terrain wins at init
         terrainCheckbox.disabled = false;
         shadeCheckbox.disabled = false;
-        esriHsCheckbox.disabled = false;
         terrainCheckbox.checked = terrainOn;
         shadeCheckbox.checked = shadeOn;
-        esriHsCheckbox.checked = esriHsOn;
         terrainCheckbox.addEventListener('change', () => {
             terrainOn = terrainCheckbox.checked;
-            if (terrainOn) clearOtherRelief('terrain');
+            if (terrainOn && shadeOn) { // relief is exclusive
+                shadeOn = false; shadeCheckbox.checked = false; setUrlParam('shade', null); applyExtraOverlays();
+            }
             setUrlParam('terrain', terrainOn ? '1' : null);
             refreshTerrainExagRow();
             applyTerrain();
-            applyExtraOverlays(); // drop any shade/esri-hs layer cleared above
         });
         shadeCheckbox.addEventListener('change', () => {
             shadeOn = shadeCheckbox.checked;
-            if (shadeOn) clearOtherRelief('shade');
+            if (shadeOn && terrainOn) {
+                terrainOn = false; terrainCheckbox.checked = false; setUrlParam('terrain', null); refreshTerrainExagRow(); applyTerrain();
+            }
             setUrlParam('shade', shadeOn ? '1' : null);
-            applyExtraOverlays();
-        });
-        esriHsCheckbox.addEventListener('change', () => {
-            esriHsOn = esriHsCheckbox.checked;
-            if (esriHsOn) clearOtherRelief('esrihs');
-            setUrlParam('esrihs', esriHsOn ? '1' : null);
             applyExtraOverlays();
         });
         let terrainUpdatePending = false;
@@ -2252,8 +2096,7 @@
         // Cross-basemap overlays: coast / image (shade is now a relief toggle).
         for (const [id, param, get, set] of [
             ['diag-coast', 'coast', () => coastOn, (v) => { coastOn = v; }],
-            ['diag-image', 'image', () => imageOn, (v) => { imageOn = v; }],
-            ['diag-cities', 'cities', () => citiesOn, (v) => { citiesOn = v; }]
+            ['diag-image', 'image', () => imageOn, (v) => { imageOn = v; }]
         ]) {
             const box = document.getElementById(id);
             box.disabled = false;
@@ -2314,19 +2157,13 @@
         for (const radio of [defaultCheckbox, noneRadio, watercolorCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, hexbinsCheckbox]) {
             radio.disabled = false;
         }
-        // The two Esri vector radios stay disabled unless a token was supplied
-        // (?esritoken=). Without it, selecting them would fetch empty tiles.
-        esriTopoCheckbox.disabled = !esriToken;
-        esriHgeoCheckbox.disabled = !esriToken;
         watercolorCheckbox.checked = useWatercolor;
         choroplethCheckbox.checked = useChoropleth && !useWatercolor && !useDemotiles && !useOverture && !useHexbins;
         demotilesCheckbox.checked = useDemotiles;
         overtureCheckbox.checked = useOverture;
         hexbinsCheckbox.checked = useHexbins;
-        esriTopoCheckbox.checked = useEsriTopo && !!esriToken;
-        esriHgeoCheckbox.checked = useEsriHgeo && !!esriToken;
         noneRadio.checked = useNoBasemap;
-        defaultCheckbox.checked = !useNoBasemap && !watercolorCheckbox.checked && !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useHexbins && !esriTopoCheckbox.checked && !esriHgeoCheckbox.checked;
+        defaultCheckbox.checked = !useNoBasemap && !watercolorCheckbox.checked && !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useHexbins;
 
         // Hexbin regeneration: rebuild on zoom-bucket change or viewport
         // move beyond z3, throttled by moveend. H3 cells are earth-fixed
@@ -2399,7 +2236,7 @@
         // labels. The checkbox is enabled/disabled to match.
         const labelsSection = document.getElementById('diag-labels-section');
         function refreshLabelCheckboxEnablement() {
-            const activeMode = overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : esriTopoCheckbox.checked ? 'esritopo' : null;
+            const activeMode = overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null;
             let anyActive = false;
             for (const key of Object.keys(LABEL_DATASETS)) {
                 const ds = LABEL_DATASETS[key];
@@ -2410,10 +2247,7 @@
                 document.getElementById(ds.checkboxId).disabled = !active;
             }
             labelsSection.style.display = anyActive ? '' : 'none';
-            // The client-side graticule overlay only exists in the local styles
-            // and overture; demotiles and the Esri styles carry no graticule
-            // layer, so its toggle is inert there.
-            graticuleCheckbox.disabled = demotilesCheckbox.checked || esriTopoCheckbox.checked || esriHgeoCheckbox.checked;
+            graticuleCheckbox.disabled = demotilesCheckbox.checked;
         }
         refreshLabelCheckboxEnablement();
         applyLabelVisibility();
@@ -2423,8 +2257,6 @@
             if (watercolorCheckbox.checked) return 'watercolor';
             if (overtureCheckbox.checked) return 'overture';
             if (demotilesCheckbox.checked) return 'demotiles';
-            if (esriTopoCheckbox.checked) return 'esritopo';
-            if (esriHgeoCheckbox.checked) return 'esrihgeo';
             if (choroplethCheckbox.checked) return 'choropleth';
             if (defaultCheckbox.checked) return 'default';
             // Either the explicit `none` radio, or (defensively) a group with
@@ -2438,13 +2270,13 @@
             // `source` carries every basemap except the implicit `default`
             // (no param) and `choropleth` (kept on its own ?choropleth= for
             // back-compat). `none` is an explicit deselect.
-            setUrlParam('source', ['hexbins', 'watercolor', 'overture', 'demotiles', 'esritopo', 'esrihgeo', 'none'].includes(mode) ? mode : null);
+            setUrlParam('source', (mode === 'hexbins' || mode === 'watercolor' || mode === 'overture' || mode === 'demotiles' || mode === 'none') ? mode : null);
             setUrlParam('choropleth', mode === 'choropleth' ? '1' : null);
         }
         // Native `name="diag-basemap"` now enforces exclusivity, so the old
         // hand-rolled unchecking loop is gone. Radios only fire `change` when
         // they BECOME checked, which is exactly when the style must change.
-        for (const radio of [defaultCheckbox, noneRadio, watercolorCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, hexbinsCheckbox, esriTopoCheckbox, esriHgeoCheckbox]) {
+        for (const radio of [defaultCheckbox, noneRadio, watercolorCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, hexbinsCheckbox]) {
             radio.addEventListener('change', refreshStyleFromCheckboxes);
         }
     });
