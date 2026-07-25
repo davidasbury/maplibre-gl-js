@@ -200,10 +200,11 @@
     </div>
     <div class="diag-section" data-section="relief" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-relief">relief <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-relief">
-        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with shade. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label> <label for="diag-shade" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain."><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label></div>
+        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with the 2D relief options. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
         <div id="diag-terrain-exag" class="diag-toggle diag-sub" style="display:none" title="3D terrain vertical exaggeration (map.setTerrain exaggeration). Live-updates, no reload; ?exag= persists in the URL. 1.0 = true scale.">
             <label>exag <input type="range" id="diag-exag" min="0" max="5" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-exag-val">1.5</span></label>
         </div>
+        <div class="diag-toggle"><label for="diag-shade" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain and esri hs. ?shade=1."><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label> <label for="diag-esri-hs" title="Esri World Hillshade: 2D relief raster (keyless, services.arcgisonline.com) draped over the active basemap. Mutually exclusive with terrain and shade. ?esrihs=1. Network required."><input type="checkbox" id="diag-esri-hs" disabled /> esri hs <span style="opacity:.6">(2D)</span></label></div>
     </div>
     <div class="diag-section" data-section="basemap" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-basemap">basemap <span style="opacity:.6">(one, or none)</span> <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-basemap">
@@ -1787,6 +1788,7 @@
     //   layers.
     let coastOn = params.get('coast') === '1';
     let shadeOn = params.get('shade') === '1';
+    let esriHsOn = params.get('esrihs') === '1';
     let imageOn = params.get('image') === '1';
 
     const NE_COAST_URL = (scale) => `https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_${scale}_coastline.geojson`;
@@ -1852,6 +1854,25 @@
             }
         } else if (map.getLayer('shade-ov')) {
             map.removeLayer('shade-ov');
+        }
+        // Esri World Hillshade: a keyless raster tile relief (services.arcgisonline.com),
+        // a 2D alternative to the Mapterhorn `shade` -- reprojected onto the EE plane
+        // by MapLibre like the s2cloudless image overlay. Half-opacity so the basemap
+        // reads through. Relief is 3-way exclusive, so shade and this are never both on.
+        if (esriHsOn) {
+            if (!map.getSource('esri-hillshade')) {
+                map.addSource('esri-hillshade', {
+                    type: 'raster',
+                    tiles: ['https://services.arcgisonline.com/arcgis/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}'],
+                    tileSize: 256, maxzoom: 16,
+                    attribution: 'Hillshade &copy; Esri, USGS, NOAA'
+                });
+            }
+            if (!map.getLayer('esri-hs-ov')) {
+                map.addLayer({id: 'esri-hs-ov', type: 'raster', source: 'esri-hillshade', paint: {'raster-opacity': 0.55}}, beforeGrat);
+            }
+        } else if (map.getLayer('esri-hs-ov')) {
+            map.removeLayer('esri-hs-ov');
         }
         if (coastOn) {
             if (!map.getSource('ne-coast')) {
@@ -2027,13 +2048,15 @@
             setUrlParam('zb', zB === DEFAULT_ZB ? null : zB.toFixed(1));
         });
 
-        // --- Relief: terrain (3D) XOR shade (2D), each draping the active
-        // basemap. Both re-apply across basemap swaps (applyTerrain /
-        // applyExtraOverlays on style.load). Mutually exclusive: turning one on
-        // turns the other off. The exag row is a .diag-sub shown only when
-        // terrain is on (like z_a/z_b), so it costs nothing against the E8
-        // default-panel budget.
+        // --- Relief is 3-way exclusive: terrain (3D) / shade (2D) / esri hs
+        // (2D). Each drapes the active basemap and re-applies across basemap
+        // swaps (applyTerrain / applyExtraOverlays on style.load). Turning one
+        // on turns the other two off. terrain uses map.setTerrain(); shade and
+        // esri hs are raster/hillshade layers added by applyExtraOverlays. The
+        // exag row is a .diag-sub shown only when terrain is on (like z_a/z_b),
+        // so it costs nothing against the E8 default-panel budget.
         const shadeCheckbox = document.getElementById('diag-shade');
+        const esriHsCheckbox = document.getElementById('diag-esri-hs');
         const terrainExagRow = document.getElementById('diag-terrain-exag');
         const exagSlider = document.getElementById('diag-exag');
         const exagVal = document.getElementById('diag-exag-val');
@@ -2043,26 +2066,48 @@
             terrainExagRow.style.display = terrainOn ? '' : 'none';
             exagSlider.disabled = !terrainOn;
         }
-        if (terrainOn) shadeOn = false; // relief is exclusive; terrain wins at init
+        // Turn off every relief mode except `keep` (state + checkbox + URL).
+        // Each cleared mode's own apply path runs; the caller then re-applies.
+        function clearOtherRelief(keep) {
+            if (keep !== 'terrain' && terrainOn) {
+                terrainOn = false; terrainCheckbox.checked = false; setUrlParam('terrain', null);
+                refreshTerrainExagRow(); applyTerrain();
+            }
+            if (keep !== 'shade' && shadeOn) {
+                shadeOn = false; shadeCheckbox.checked = false; setUrlParam('shade', null);
+            }
+            if (keep !== 'esrihs' && esriHsOn) {
+                esriHsOn = false; esriHsCheckbox.checked = false; setUrlParam('esrihs', null);
+            }
+        }
+        // Init exclusivity priority if more than one relief param is set:
+        // terrain > shade > esri hs.
+        if (terrainOn) { shadeOn = false; esriHsOn = false; }
+        else if (shadeOn) { esriHsOn = false; }
         terrainCheckbox.disabled = false;
         shadeCheckbox.disabled = false;
+        esriHsCheckbox.disabled = false;
         terrainCheckbox.checked = terrainOn;
         shadeCheckbox.checked = shadeOn;
+        esriHsCheckbox.checked = esriHsOn;
         terrainCheckbox.addEventListener('change', () => {
             terrainOn = terrainCheckbox.checked;
-            if (terrainOn && shadeOn) { // relief is exclusive
-                shadeOn = false; shadeCheckbox.checked = false; setUrlParam('shade', null); applyExtraOverlays();
-            }
+            if (terrainOn) clearOtherRelief('terrain');
             setUrlParam('terrain', terrainOn ? '1' : null);
             refreshTerrainExagRow();
             applyTerrain();
+            applyExtraOverlays(); // drop any shade/esri-hs layer cleared above
         });
         shadeCheckbox.addEventListener('change', () => {
             shadeOn = shadeCheckbox.checked;
-            if (shadeOn && terrainOn) {
-                terrainOn = false; terrainCheckbox.checked = false; setUrlParam('terrain', null); refreshTerrainExagRow(); applyTerrain();
-            }
+            if (shadeOn) clearOtherRelief('shade');
             setUrlParam('shade', shadeOn ? '1' : null);
+            applyExtraOverlays();
+        });
+        esriHsCheckbox.addEventListener('change', () => {
+            esriHsOn = esriHsCheckbox.checked;
+            if (esriHsOn) clearOtherRelief('esrihs');
+            setUrlParam('esrihs', esriHsOn ? '1' : null);
             applyExtraOverlays();
         });
         let terrainUpdatePending = false;
