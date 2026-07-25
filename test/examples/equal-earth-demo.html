@@ -195,7 +195,6 @@
     <div class="diag-section" data-section="overlays" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-overlays">overlays <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-overlays">
         <div class="diag-toggle"><label for="diag-graticule" title="15&deg; graticule lines (client-side GeoJSON; the curvature signature of Equal Earth). Not available in demotiles mode (remote style carries no graticule source)."><input type="checkbox" id="diag-graticule" disabled /> graticule</label> <label for="diag-tissot" title="Tissot's indicatrix: each circle covers equal ground N&ndash;S and E&ndash;W; its label is the on-screen width/height ratio. 1.00 = undistorted shape. Area stays equal at every latitude regardless."><input type="checkbox" id="diag-tissot" disabled /> tissot</label></div>
-        <div id="diag-lbl-graticule-row" class="diag-toggle diag-sub" style="display:none" title="Graticule line labels (meridian/parallel degree values, line-following along bowing meridians). Overture basemap only. Off by default (?lbl-graticule=1)."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> labels</label></div>
         <div class="diag-toggle"><label for="diag-coast" title="Natural Earth coastline polylines, multi-scale (110m/50m/10m by zoom), over any basemap. Curated ocean coastline &mdash; one consistent estuary-inland judgment; lake shores intentionally absent. Network: fetched once per scale from the pinned NE v5.1.2 GeoJSON."><input type="checkbox" id="diag-coast" disabled /> coast</label> <label for="diag-image" title="Sentinel-2 cloudless imagery (EOX) at half opacity over any basemap &mdash; validation backdrop."><input type="checkbox" id="diag-image" disabled /> image</label></div>
     </div>
     <div class="diag-section" data-section="relief" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-relief">relief <span class="diag-collapse">&minus;</span></div>
@@ -221,9 +220,20 @@
                 <div class="diag-toggle"><label for="diag-hexbins" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><input type="radio" name="diag-basemap" id="diag-hexbins" disabled /> hexbins</label></div>
             </div>
         </div>
-        <div id="diag-lbl-demotiles-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> labels</label></div>
-        <div id="diag-lbl-divisions-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
-        <div id="diag-lbl-roads-row" class="diag-toggle diag-sub" style="display:none" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
+    </div>
+    <!-- Labels: a dedicated collapsible section below basemap, holding every
+         label-layer toggle. The whole section (`#diag-labels-section`
+         wrapper) is shown only when the active basemap carries toggleable
+         labels (demotiles / overture) -- refreshLabelCheckboxEnablement drives
+         it. Each row inside is still shown per its own owning mode. -->
+    <div id="diag-labels-section" style="display:none">
+        <div class="diag-section" data-section="labels" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-labels">labels <span class="diag-collapse">&minus;</span></div>
+        <div id="diag-body-labels">
+            <div id="diag-lbl-graticule-row" class="diag-toggle" style="display:none" title="Graticule line labels (meridian/parallel degree values, line-following along bowing meridians). Overture basemap only. Off by default (?lbl-graticule=1)."><label for="diag-lbl-graticule"><input type="checkbox" id="diag-lbl-graticule" disabled /> graticule</label></div>
+            <div id="diag-lbl-demotiles-row" class="diag-toggle" style="display:none" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> demotiles</label></div>
+            <div id="diag-lbl-divisions-row" class="diag-toggle" style="display:none" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
+            <div id="diag-lbl-roads-row" class="diag-toggle" style="display:none" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
+        </div>
     </div>
 </div>
 <script src="./pmtiles-4.4.1.min.js"></script>
@@ -2265,17 +2275,23 @@
                 setUrlParam(dataset.param, checkbox.checked ? null : '0');
             });
         }
-        // Label sub-rows are shown ONLY while their owning basemap is active
-        // (panel cleanup); the checkbox is also enabled/disabled to match.
+        // Label rows live in their own `labels` section (below basemap); each
+        // row is shown only while its owning basemap is active, and the whole
+        // section is hidden unless the active basemap carries any toggleable
+        // labels. The checkbox is enabled/disabled to match.
+        const labelsSection = document.getElementById('diag-labels-section');
         function refreshLabelCheckboxEnablement() {
             const activeMode = overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null;
+            let anyActive = false;
             for (const key of Object.keys(LABEL_DATASETS)) {
                 const ds = LABEL_DATASETS[key];
                 const active = ds.mode === activeMode;
+                if (active) anyActive = true;
                 const row = document.getElementById(ds.rowId);
                 if (row) row.style.display = active ? '' : 'none';
                 document.getElementById(ds.checkboxId).disabled = !active;
             }
+            labelsSection.style.display = anyActive ? '' : 'none';
             graticuleCheckbox.disabled = demotilesCheckbox.checked;
         }
         refreshLabelCheckboxEnablement();
