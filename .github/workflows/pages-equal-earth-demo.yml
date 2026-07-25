@@ -67,8 +67,12 @@ jobs:
           # differing only in the demo HTML: neutral (equal-earth) at the root,
           # esri (equal-earth-esri) at /esri/. The engine is identical on both
           # branches, so it's built once and mirrored into each variant.
+          # $3 is an optional default query the index redirect appends -- e.g.
+          # the /esri/ pitch URL opens on Esri Topographic without changing the
+          # demo's own default (so the raw demo + gates keep the local NE land
+          # default, and the redirect is the only place that knows the default).
           build_variant() {
-            local branch="$1" dest="$2"
+            local branch="$1" dest="$2" query="${3:-}"
             mkdir -p "$dest/dist" "$dest/test/examples" "$dest/test/bench/data"
             cp -r dist/. "$dest/dist/"
             cp test/examples/pmtiles-4.4.1.min.js \
@@ -79,13 +83,14 @@ jobs:
                "$dest/test/bench/data/"
             git show "origin/${branch}:test/examples/equal-earth-demo.html" \
                > "$dest/test/examples/equal-earth-demo.html"
-            cat > "$dest/index.html" <<'HTML'
+            local url="./test/examples/equal-earth-demo.html${query}"
+            cat > "$dest/index.html" <<HTML
           <!doctype html>
           <meta charset="utf-8">
           <title>Equal Earth demo - MapLibre GL JS fork</title>
-          <meta http-equiv="refresh" content="0; url=./test/examples/equal-earth-demo.html">
-          <link rel="canonical" href="./test/examples/equal-earth-demo.html">
-          <p><a href="./test/examples/equal-earth-demo.html">Equal Earth demo</a></p>
+          <meta http-equiv="refresh" content="0; url=${url}">
+          <link rel="canonical" href="${url}">
+          <p><a href="${url}">Equal Earth demo</a></p>
           HTML
             # Fail loudly rather than shipping a blank map / empty demo.
             test -s "$dest/dist/maplibre-gl-dev.mjs"
@@ -93,8 +98,8 @@ jobs:
             test -s "$dest/test/bench/data/naturalearth-land.json"
             test -s "$dest/test/examples/equal-earth-demo.html"
           }
-          build_variant equal-earth      site        # vendor-neutral (root)
-          build_variant equal-earth-esri site/esri   # Esri pitch demo (/esri/)
+          build_variant equal-earth      site        ''                   # vendor-neutral (root)
+          build_variant equal-earth-esri site/esri   '?source=esritopo'   # Esri pitch demo, opens on Esri topo
 
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
