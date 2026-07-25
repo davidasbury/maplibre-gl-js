@@ -21,6 +21,9 @@ on:
       - 'package-lock.json'
       - 'rolldown.config.ts'
       - '.github/workflows/pages-equal-earth-demo.yml'
+  # Triggers only on equal-earth pushes; the job builds BOTH variants (neutral
+  # at root, esri at /esri/ from origin/equal-earth-esri). After an esri-only
+  # change, redeploy /esri/ with a manual `workflow_dispatch` run.
   workflow_dispatch:
 
 permissions:
@@ -38,6 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Full history so `git show origin/equal-earth-esri:…` can read the
+          # esri demo without a second checkout.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
         with:
           node-version-file: '.nvmrc'
@@ -56,17 +63,23 @@ jobs:
       - name: Assemble site
         run: |
           set -euo pipefail
-          mkdir -p site/test/examples site/test/bench/data
-          cp -r dist site/dist
-          cp test/examples/equal-earth-demo.html \
-             test/examples/pmtiles-4.4.1.min.js \
-             test/examples/h3-js-4.3.0.umd.js \
-             site/test/examples/
-          cp test/bench/data/ne_110m_admin_0_countries.json \
-             test/bench/data/naturalearth-land.json \
-             site/test/bench/data/
-          # Land the demo at the Pages root URL too, so the short link works.
-          cat > site/index.html <<'HTML'
+          # Two variants share the built engine (dist) + data + vendored JS,
+          # differing only in the demo HTML: neutral (equal-earth) at the root,
+          # esri (equal-earth-esri) at /esri/. The engine is identical on both
+          # branches, so it's built once and mirrored into each variant.
+          build_variant() {
+            local branch="$1" dest="$2"
+            mkdir -p "$dest/dist" "$dest/test/examples" "$dest/test/bench/data"
+            cp -r dist/. "$dest/dist/"
+            cp test/examples/pmtiles-4.4.1.min.js \
+               test/examples/h3-js-4.3.0.umd.js \
+               "$dest/test/examples/"
+            cp test/bench/data/ne_110m_admin_0_countries.json \
+               test/bench/data/naturalearth-land.json \
+               "$dest/test/bench/data/"
+            git show "origin/${branch}:test/examples/equal-earth-demo.html" \
+               > "$dest/test/examples/equal-earth-demo.html"
+            cat > "$dest/index.html" <<'HTML'
           <!doctype html>
           <meta charset="utf-8">
           <title>Equal Earth demo - MapLibre GL JS fork</title>
@@ -74,10 +87,14 @@ jobs:
           <link rel="canonical" href="./test/examples/equal-earth-demo.html">
           <p><a href="./test/examples/equal-earth-demo.html">Equal Earth demo</a></p>
           HTML
-          # Fail loudly here rather than shipping a blank map.
-          test -s site/dist/maplibre-gl-dev.mjs
-          test -s site/dist/maplibre-gl.css
-          test -s site/test/bench/data/naturalearth-land.json
+            # Fail loudly rather than shipping a blank map / empty demo.
+            test -s "$dest/dist/maplibre-gl-dev.mjs"
+            test -s "$dest/dist/maplibre-gl.css"
+            test -s "$dest/test/bench/data/naturalearth-land.json"
+            test -s "$dest/test/examples/equal-earth-demo.html"
+          }
+          build_variant equal-earth      site        # vendor-neutral (root)
+          build_variant equal-earth-esri site/esri   # Esri pitch demo (/esri/)
 
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
