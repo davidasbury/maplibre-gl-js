@@ -218,8 +218,8 @@
                 <div class="diag-toggle"><label for="diag-demotiles" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><input type="radio" name="diag-basemap" id="diag-demotiles" disabled /> demotiles</label></div>
                 <div class="diag-toggle"><label for="diag-overture" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><input type="radio" name="diag-basemap" id="diag-overture" disabled /> overture</label></div>
                 <div class="diag-toggle"><label for="diag-hexbins" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><input type="radio" name="diag-basemap" id="diag-hexbins" disabled /> hexbins</label></div>
-                <div class="diag-toggle"><label for="diag-esri-topo" title="Esri ArcGIS Topographic vector basemap (Basemap Styles API v2), equal-earth applied via transformStyle. Needs an ArcGIS token via ?esritoken= (disabled without one). ?source=esritopo."><input type="radio" name="diag-basemap" id="diag-esri-topo" disabled /> esri topo</label></div>
-                <div class="diag-toggle"><label for="diag-esri-hgeo" title="Esri ArcGIS Human Geography vector basemap (Andrew Skinner's light-gray monochrome design), equal-earth applied via transformStyle. Needs an ArcGIS token via ?esritoken= (disabled without one). ?source=esrihgeo."><input type="radio" name="diag-basemap" id="diag-esri-hgeo" disabled /> esri hgeo</label></div>
+                <div class="diag-toggle"><label for="diag-esri-topo" title="Esri ArcGIS Topographic vector basemap (Basemap Styles API v2), equal-earth applied via transformStyle. Authenticated via the esri-proxy.davidasbury.com key-injecting proxy by default (?esriproxy=0 to disable), or a client ?esritoken=. ?source=esritopo."><input type="radio" name="diag-basemap" id="diag-esri-topo" disabled /> esri topo</label></div>
+                <div class="diag-toggle"><label for="diag-esri-hgeo" title="Esri ArcGIS Human Geography vector basemap (Andrew Skinner's light-gray monochrome design), equal-earth applied via transformStyle. Authenticated via the esri-proxy.davidasbury.com key-injecting proxy by default (?esriproxy=0 to disable), or a client ?esritoken=. ?source=esrihgeo."><input type="radio" name="diag-basemap" id="diag-esri-hgeo" disabled /> esri hgeo</label></div>
             </div>
         </div>
     </div>
@@ -341,14 +341,23 @@
     // generation is limited to the viewport (+margin) beyond z3.
     const useHexbins = params.get('source') === 'hexbins';
 
-    // Esri ArcGIS vector basemaps (owner request 2026-07-25): loaded from the
-    // Basemap Styles API v2 with the `?esritoken=` key. The two radios sit
-    // disabled unless a token is supplied, so the committed public-Pages
-    // default stays keyless (never bake a token). The token is echoed into the
-    // style's glyphs URL but NOT its vector tile / sprite / baked-in hillshade
-    // requests, so the map's transformRequest (below) appends it to every
-    // *.arcgis.com API host (services.arcgisonline.com stays keyless).
+    // Esri ArcGIS vector basemaps (owner request 2026-07-25). Two ways to
+    // authenticate, never a baked-in token:
+    //  - PROXY (default on this branch): requests to the three ArcGIS API hosts
+    //    are rewritten to esri-proxy.davidasbury.com, which injects a personal
+    //    Location Platform key server-side (homelab-ops esri-basemap-proxy).
+    //    This is what makes the public Pages demo work with no client secret.
+    //  - TOKEN (`?esritoken=`, for local/dev): the token is appended client-side
+    //    and takes precedence over the proxy.
+    // `?esriproxy=0` disables the proxy (radios then need ?esritoken=).
+    // Esri echoes the token into the style's glyphs URL but NOT its tile/sprite/
+    // baked-in-hillshade requests, so BOTH modes act on every *.arcgis.com API
+    // host in transformRequest (services.arcgisonline.com stays keyless).
     const esriToken = params.get('esritoken');
+    const esriProxyBase = params.get('esriproxybase') || 'https://esri-proxy.davidasbury.com';
+    const esriUseProxy = !esriToken && params.get('esriproxy') !== '0';
+    const esriAvailable = !!esriToken || esriUseProxy; // radios enabled iff this
+    const ESRI_PROXY_PREFIX = {'basemapstyles-api': 'basemapstyles', 'basemaps-api': 'basemaps', 'ibasemaps-api': 'ibasemaps'};
     const useEsriTopo = params.get('source') === 'esritopo';
     const useEsriHgeo = params.get('source') === 'esrihgeo';
 
@@ -1273,7 +1282,9 @@
     // caps (Esri vector tiles are mercator-cut at ~85°). The token rides in via
     // the map's transformRequest; the URL only needs it on the initial style
     // fetch (glyphs are pre-echoed).
-    const ESRI_STYLE_URL = (name) => `https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/arcgis/${name}?token=${encodeURIComponent(esriToken || '')}`;
+    const ESRI_STYLE_URL = (name) => esriUseProxy
+        ? `${esriProxyBase}/basemapstyles/arcgis/rest/services/styles/v2/styles/arcgis/${name}`
+        : `https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/arcgis/${name}?token=${encodeURIComponent(esriToken || '')}`;
     const ESRI_SET_STYLE_OPTIONS = {
         transformStyle: (_prev, next) => {
             const backgroundLayer = next.layers.find((l) => l.type === 'background');
@@ -1610,14 +1621,19 @@
         center: [centerLng, centerLat],
         zoom,
         pitch: pitchInit,
-        // Append the Esri token to every ArcGIS Basemap-Styles API request
-        // (style/sprite/glyphs/tilejson/tiles + the baked-in ibasemaps
-        // hillshade) that doesn't already carry it. Scoped to the tokenised
-        // API hosts only -- services.arcgisonline.com (the keyless `esri hs`
-        // relief) and every non-Esri source are left untouched. No-op without
-        // a token.
-        transformRequest: esriToken ? (url) => {
-            if (/\/\/(?:basemaps-api|ibasemaps-api|basemapstyles-api)\.arcgis\.com\//.test(url) && !/[?&]token=/.test(url)) {
+        // Route the three ArcGIS Basemap-Styles API hosts (style/sprite/glyphs/
+        // tilejson/tiles + the baked-in ibasemaps hillshade). PROXY mode
+        // rewrites the host to esri-proxy.davidasbury.com/<prefix>/ and lets the
+        // proxy inject the key; TOKEN mode appends ?token= client-side. Either
+        // way, services.arcgisonline.com (the keyless `esri hs` relief) and
+        // every non-Esri source are untouched. Inactive if neither is available.
+        transformRequest: esriAvailable ? (url) => {
+            const m = url.match(/^https:\/\/(basemapstyles-api|basemaps-api|ibasemaps-api)\.arcgis\.com\/(.*)$/);
+            if (!m) return undefined;
+            if (esriUseProxy) {
+                return {url: `${esriProxyBase}/${ESRI_PROXY_PREFIX[m[1]]}/${m[2]}`};
+            }
+            if (!/[?&]token=/.test(url)) {
                 return {url: url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(esriToken)};
             }
             return undefined;
@@ -1643,7 +1659,7 @@
             map.jumpTo({zoom: params.has('zoom') ? zoom : 0});
         });
     }
-    const initialMode = useHexbins ? 'hexbins' : useWatercolor ? 'watercolor' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : (useEsriTopo && esriToken) ? 'esritopo' : (useEsriHgeo && esriToken) ? 'esrihgeo' : useChoropleth ? 'choropleth' : useNoBasemap ? 'none' : 'default';
+    const initialMode = useHexbins ? 'hexbins' : useWatercolor ? 'watercolor' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : (useEsriTopo && esriAvailable) ? 'esritopo' : (useEsriHgeo && esriAvailable) ? 'esrihgeo' : useChoropleth ? 'choropleth' : useNoBasemap ? 'none' : 'default';
     await applyStyle(initialMode);
     window.map = map;
 
@@ -2316,15 +2332,15 @@
         }
         // The two Esri vector radios stay disabled unless a token was supplied
         // (?esritoken=). Without it, selecting them would fetch empty tiles.
-        esriTopoCheckbox.disabled = !esriToken;
-        esriHgeoCheckbox.disabled = !esriToken;
+        esriTopoCheckbox.disabled = !esriAvailable;
+        esriHgeoCheckbox.disabled = !esriAvailable;
         watercolorCheckbox.checked = useWatercolor;
         choroplethCheckbox.checked = useChoropleth && !useWatercolor && !useDemotiles && !useOverture && !useHexbins;
         demotilesCheckbox.checked = useDemotiles;
         overtureCheckbox.checked = useOverture;
         hexbinsCheckbox.checked = useHexbins;
-        esriTopoCheckbox.checked = useEsriTopo && !!esriToken;
-        esriHgeoCheckbox.checked = useEsriHgeo && !!esriToken;
+        esriTopoCheckbox.checked = useEsriTopo && esriAvailable;
+        esriHgeoCheckbox.checked = useEsriHgeo && esriAvailable;
         noneRadio.checked = useNoBasemap;
         defaultCheckbox.checked = !useNoBasemap && !watercolorCheckbox.checked && !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useHexbins && !esriTopoCheckbox.checked && !esriHgeoCheckbox.checked;
 
