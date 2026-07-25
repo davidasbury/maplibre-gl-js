@@ -218,6 +218,8 @@
                 <div class="diag-toggle"><label for="diag-demotiles" title="demotiles.maplibre.org basemap with equal-earth applied via transformStyle (network required)."><input type="radio" name="diag-basemap" id="diag-demotiles" disabled /> demotiles</label></div>
                 <div class="diag-toggle"><label for="diag-overture" title="Overture Maps PMTiles (base + buildings + divisions + transportation), fully labeled &mdash; the step-9 symbols/collision corpus. Remote range requests to the Overture S3 bucket (network required)."><input type="radio" name="diag-basemap" id="diag-overture" disabled /> overture</label></div>
                 <div class="diag-toggle"><label for="diag-hexbins" title="Hexagonal-bin basemap: Uber H3 cells (earth-fixed, seam-proof at every latitude, ~2% area wobble, 12 pentagons), shaded by land fraction — Overture coastline resolution where tiles are loaded, Natural Earth elsewhere. Resolution adapts to zoom."><input type="radio" name="diag-basemap" id="diag-hexbins" disabled /> hexbins</label></div>
+                <div class="diag-toggle"><label for="diag-esri-topo" title="Esri ArcGIS Topographic vector basemap (Basemap Styles API v2), equal-earth applied via transformStyle. Needs an ArcGIS token via ?esritoken= (disabled without one). ?source=esritopo."><input type="radio" name="diag-basemap" id="diag-esri-topo" disabled /> esri topo</label></div>
+                <div class="diag-toggle"><label for="diag-esri-hgeo" title="Esri ArcGIS Human Geography vector basemap (Andrew Skinner's light-gray monochrome design), equal-earth applied via transformStyle. Needs an ArcGIS token via ?esritoken= (disabled without one). ?source=esrihgeo."><input type="radio" name="diag-basemap" id="diag-esri-hgeo" disabled /> esri hgeo</label></div>
             </div>
         </div>
     </div>
@@ -233,6 +235,7 @@
             <div id="diag-lbl-demotiles-row" class="diag-toggle" style="display:none" title="Toggle the demotiles label layers (countries + geolines) for label-isolation testing."><label for="diag-lbl-demotiles"><input type="checkbox" id="diag-lbl-demotiles" disabled /> demotiles</label></div>
             <div id="diag-lbl-divisions-row" class="diag-toggle" style="display:none" title="Toggle the Overture divisions labels (country/region/locality points)."><label for="diag-lbl-divisions"><input type="checkbox" id="diag-lbl-divisions" disabled /> divisions</label></div>
             <div id="diag-lbl-roads-row" class="diag-toggle" style="display:none" title="Toggle the Overture road labels (line-following, z11+)."><label for="diag-lbl-roads"><input type="checkbox" id="diag-lbl-roads" disabled /> roads</label></div>
+            <div id="diag-lbl-esritopo-row" class="diag-toggle" style="display:none" title="Toggle every Esri Topographic label layer (all text symbols in the style)."><label for="diag-lbl-esritopo"><input type="checkbox" id="diag-lbl-esritopo" disabled /> esri topo</label></div>
         </div>
     </div>
 </div>
@@ -337,6 +340,17 @@
     // Earth EE-plane raster elsewhere. Resolution adapts to zoom;
     // generation is limited to the viewport (+margin) beyond z3.
     const useHexbins = params.get('source') === 'hexbins';
+
+    // Esri ArcGIS vector basemaps (owner request 2026-07-25): loaded from the
+    // Basemap Styles API v2 with the `?esritoken=` key. The two radios sit
+    // disabled unless a token is supplied, so the committed public-Pages
+    // default stays keyless (never bake a token). The token is echoed into the
+    // style's glyphs URL but NOT its vector tile / sprite / baked-in hillshade
+    // requests, so the map's transformRequest (below) appends it to every
+    // *.arcgis.com API host (services.arcgisonline.com stays keyless).
+    const esriToken = params.get('esritoken');
+    const useEsriTopo = params.get('source') === 'esritopo';
+    const useEsriHgeo = params.get('source') === 'esrihgeo';
 
     // ---- Stage C adaptive blend (plan step 11, 2026-07-23) --------------
     // `?adaptive=1`: the projection becomes the named `equal-earth-adaptive`
@@ -1253,6 +1267,29 @@
         }
     };
 
+    // Esri ArcGIS vector basemap styles (Basemap Styles API v2). Loaded via
+    // setStyle(url, {transformStyle}) exactly like demotiles -- the fork's
+    // transformStyle injects the equal-earth projection and the §5.5 polar
+    // caps (Esri vector tiles are mercator-cut at ~85°). The token rides in via
+    // the map's transformRequest; the URL only needs it on the initial style
+    // fetch (glyphs are pre-echoed).
+    const ESRI_STYLE_URL = (name) => `https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/arcgis/${name}?token=${encodeURIComponent(esriToken || '')}`;
+    const ESRI_SET_STYLE_OPTIONS = {
+        transformStyle: (_prev, next) => {
+            const backgroundLayer = next.layers.find((l) => l.type === 'background');
+            const ocean = (backgroundLayer && backgroundLayer.paint && backgroundLayer.paint['background-color']) || '#cfe0ec';
+            const backgroundIndex = next.layers.findIndex((l) => l.type === 'background') + 1;
+            const layers = next.layers.slice();
+            layers.splice(backgroundIndex, 0, ...polarCapLayers('#ffffff', ocean));
+            return {
+                ...next,
+                projection: projectionSpec(),
+                sources: {...next.sources, 'polar-caps': {type: 'geojson', data: polarCaps}},
+                layers
+            };
+        }
+    };
+
     // Overture geometry-only style. Layer names and zoom ranges verified
     // against the archives' own vector_layers metadata (2026-06-17.0): base
     // carries land/water/land_cover/land_use/infrastructure/bathymetry
@@ -1550,6 +1587,8 @@
         else if (mode === 'watercolor') map.setStyle(buildWatercolorStyle());
         else if (mode === 'overture') map.setStyle(buildOvertureStyle());
         else if (mode === 'demotiles') map.setStyle(DEMOTILES_URL, DEMOTILES_SET_STYLE_OPTIONS);
+        else if (mode === 'esritopo') map.setStyle(ESRI_STYLE_URL('topographic'), ESRI_SET_STYLE_OPTIONS);
+        else if (mode === 'esrihgeo') map.setStyle(ESRI_STYLE_URL('human-geography'), ESRI_SET_STYLE_OPTIONS);
         else if (mode === 'choropleth') map.setStyle(await buildChoroplethStyle());
         else if (mode === 'none') map.setStyle(buildBlankStyle());
         else map.setStyle(await buildLandStyle());
@@ -1570,7 +1609,19 @@
         container: 'map',
         center: [centerLng, centerLat],
         zoom,
-        pitch: pitchInit
+        pitch: pitchInit,
+        // Append the Esri token to every ArcGIS Basemap-Styles API request
+        // (style/sprite/glyphs/tilejson/tiles + the baked-in ibasemaps
+        // hillshade) that doesn't already carry it. Scoped to the tokenised
+        // API hosts only -- services.arcgisonline.com (the keyless `esri hs`
+        // relief) and every non-Esri source are left untouched. No-op without
+        // a token.
+        transformRequest: esriToken ? (url) => {
+            if (/\/\/(?:basemaps-api|ibasemaps-api|basemapstyles-api)\.arcgis\.com\//.test(url) && !/[?&]token=/.test(url)) {
+                return {url: url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(esriToken)};
+            }
+            return undefined;
+        } : undefined
     });
     let clipOn = false; // live transform state; checkbox wiring still happens at 'load'
     // Clip flags must land on the FIRST styled frame, not at the 'load'
@@ -1592,7 +1643,7 @@
             map.jumpTo({zoom: params.has('zoom') ? zoom : 0});
         });
     }
-    const initialMode = useHexbins ? 'hexbins' : useWatercolor ? 'watercolor' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : useChoropleth ? 'choropleth' : useNoBasemap ? 'none' : 'default';
+    const initialMode = useHexbins ? 'hexbins' : useWatercolor ? 'watercolor' : useOverture ? 'overture' : useDemotiles ? 'demotiles' : (useEsriTopo && esriToken) ? 'esritopo' : (useEsriHgeo && esriToken) ? 'esrihgeo' : useChoropleth ? 'choropleth' : useNoBasemap ? 'none' : 'default';
     await applyStyle(initialMode);
     window.map = map;
 
@@ -1745,7 +1796,13 @@
         demotiles: {checkboxId: 'diag-lbl-demotiles', rowId: 'diag-lbl-demotiles-row', param: 'lbl-demotiles', mode: 'demotiles', layers: ['countries-label', 'geolines-label'], defaultOn: true},
         divisions: {checkboxId: 'diag-lbl-divisions', rowId: 'diag-lbl-divisions-row', param: 'lbl-divisions', mode: 'overture', layers: ['country-labels', 'region-labels', 'locality-labels'], defaultOn: true},
         roads: {checkboxId: 'diag-lbl-roads', rowId: 'diag-lbl-roads-row', param: 'lbl-roads', mode: 'overture', layers: ['road-labels'], defaultOn: true},
-        graticule: {checkboxId: 'diag-lbl-graticule', rowId: 'diag-lbl-graticule-row', param: 'lbl-graticule', mode: 'overture', layers: ['graticule-labels'], defaultOn: false}
+        graticule: {checkboxId: 'diag-lbl-graticule', rowId: 'diag-lbl-graticule-row', param: 'lbl-graticule', mode: 'overture', layers: ['graticule-labels'], defaultOn: false},
+        // Esri Topographic has ~207 label layers whose ids belong to Esri's
+        // style, not ours -- so instead of a static list, collect every symbol
+        // layer that carries a text-field at apply time (collectLayers). Same
+        // toggle behaviour as the others.
+        esritopo: {checkboxId: 'diag-lbl-esritopo', rowId: 'diag-lbl-esritopo-row', param: 'lbl-esritopo', mode: 'esritopo', defaultOn: true,
+            collectLayers: () => (map.getStyle() ? map.getStyle().layers.filter((l) => l.type === 'symbol' && l.layout && l.layout['text-field']).map((l) => l.id) : [])}
     };
     const labelDatasetOn = {};
     for (const key of Object.keys(LABEL_DATASETS)) {
@@ -1755,7 +1812,9 @@
 
     function applyLabelVisibility() {
         for (const key of Object.keys(LABEL_DATASETS)) {
-            for (const layerId of LABEL_DATASETS[key].layers) {
+            const ds = LABEL_DATASETS[key];
+            const layers = ds.collectLayers ? ds.collectLayers() : ds.layers;
+            for (const layerId of layers) {
                 if (map.getLayer(layerId)) {
                     map.setLayoutProperty(layerId, 'visibility', labelDatasetOn[key] ? 'visible' : 'none');
                 }
@@ -1961,6 +2020,8 @@
         const watercolorCheckbox = document.getElementById('diag-watercolor');
         const terrainCheckbox = document.getElementById('diag-terrain');
         const hexbinsCheckbox = document.getElementById('diag-hexbins');
+        const esriTopoCheckbox = document.getElementById('diag-esri-topo');
+        const esriHgeoCheckbox = document.getElementById('diag-esri-hgeo');
 
         tissotCheckbox.disabled = false;
         tissotCheckbox.checked = useTissot;
@@ -2202,13 +2263,19 @@
         for (const radio of [defaultCheckbox, noneRadio, watercolorCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, hexbinsCheckbox]) {
             radio.disabled = false;
         }
+        // The two Esri vector radios stay disabled unless a token was supplied
+        // (?esritoken=). Without it, selecting them would fetch empty tiles.
+        esriTopoCheckbox.disabled = !esriToken;
+        esriHgeoCheckbox.disabled = !esriToken;
         watercolorCheckbox.checked = useWatercolor;
         choroplethCheckbox.checked = useChoropleth && !useWatercolor && !useDemotiles && !useOverture && !useHexbins;
         demotilesCheckbox.checked = useDemotiles;
         overtureCheckbox.checked = useOverture;
         hexbinsCheckbox.checked = useHexbins;
+        esriTopoCheckbox.checked = useEsriTopo && !!esriToken;
+        esriHgeoCheckbox.checked = useEsriHgeo && !!esriToken;
         noneRadio.checked = useNoBasemap;
-        defaultCheckbox.checked = !useNoBasemap && !watercolorCheckbox.checked && !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useHexbins;
+        defaultCheckbox.checked = !useNoBasemap && !watercolorCheckbox.checked && !choroplethCheckbox.checked && !useDemotiles && !useOverture && !useHexbins && !esriTopoCheckbox.checked && !esriHgeoCheckbox.checked;
 
         // Hexbin regeneration: rebuild on zoom-bucket change or viewport
         // move beyond z3, throttled by moveend. H3 cells are earth-fixed
@@ -2281,7 +2348,7 @@
         // labels. The checkbox is enabled/disabled to match.
         const labelsSection = document.getElementById('diag-labels-section');
         function refreshLabelCheckboxEnablement() {
-            const activeMode = overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : null;
+            const activeMode = overtureCheckbox.checked ? 'overture' : demotilesCheckbox.checked ? 'demotiles' : esriTopoCheckbox.checked ? 'esritopo' : null;
             let anyActive = false;
             for (const key of Object.keys(LABEL_DATASETS)) {
                 const ds = LABEL_DATASETS[key];
@@ -2292,7 +2359,10 @@
                 document.getElementById(ds.checkboxId).disabled = !active;
             }
             labelsSection.style.display = anyActive ? '' : 'none';
-            graticuleCheckbox.disabled = demotilesCheckbox.checked;
+            // The client-side graticule overlay only exists in the local styles
+            // and overture; demotiles and the Esri styles carry no graticule
+            // layer, so its toggle is inert there.
+            graticuleCheckbox.disabled = demotilesCheckbox.checked || esriTopoCheckbox.checked || esriHgeoCheckbox.checked;
         }
         refreshLabelCheckboxEnablement();
         applyLabelVisibility();
@@ -2302,6 +2372,8 @@
             if (watercolorCheckbox.checked) return 'watercolor';
             if (overtureCheckbox.checked) return 'overture';
             if (demotilesCheckbox.checked) return 'demotiles';
+            if (esriTopoCheckbox.checked) return 'esritopo';
+            if (esriHgeoCheckbox.checked) return 'esrihgeo';
             if (choroplethCheckbox.checked) return 'choropleth';
             if (defaultCheckbox.checked) return 'default';
             // Either the explicit `none` radio, or (defensively) a group with
@@ -2315,13 +2387,13 @@
             // `source` carries every basemap except the implicit `default`
             // (no param) and `choropleth` (kept on its own ?choropleth= for
             // back-compat). `none` is an explicit deselect.
-            setUrlParam('source', (mode === 'hexbins' || mode === 'watercolor' || mode === 'overture' || mode === 'demotiles' || mode === 'none') ? mode : null);
+            setUrlParam('source', ['hexbins', 'watercolor', 'overture', 'demotiles', 'esritopo', 'esrihgeo', 'none'].includes(mode) ? mode : null);
             setUrlParam('choropleth', mode === 'choropleth' ? '1' : null);
         }
         // Native `name="diag-basemap"` now enforces exclusivity, so the old
         // hand-rolled unchecking loop is gone. Radios only fire `change` when
         // they BECOME checked, which is exactly when the style must change.
-        for (const radio of [defaultCheckbox, noneRadio, watercolorCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, hexbinsCheckbox]) {
+        for (const radio of [defaultCheckbox, noneRadio, watercolorCheckbox, choroplethCheckbox, demotilesCheckbox, overtureCheckbox, hexbinsCheckbox, esriTopoCheckbox, esriHgeoCheckbox]) {
             radio.addEventListener('change', refreshStyleFromCheckboxes);
         }
     });
