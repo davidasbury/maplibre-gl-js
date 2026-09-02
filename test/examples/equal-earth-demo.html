@@ -1302,13 +1302,16 @@
     };
 
     // Overture geometry-only style. Layer names and zoom ranges verified
-    // against the archives' own vector_layers metadata (2026-06-17.0): base
+    // against the archives' own vector_layers metadata (2026-08-19.0): base
     // carries land/water/land_cover/land_use/infrastructure/bathymetry
-    // z0-13, buildings carries building/building_part z6-14. Palette
+    // z0-13, buildings carries building/building_part z4-14. Palette
     // extends the local land style's so mode flips are visually comparable.
     // Registering the protocol is idempotent-by-guard; done lazily so the
     // page keeps zero network cost until the mode is actually entered.
-    const OVERTURE_RELEASE = '2026-06-17.0';
+    // NB: Overture prunes old releases from the extras bucket (2026-06-17.0
+    // vanished by 2026-09-02, 404ing all four archives) — when overture mode
+    // dies with 404s, list tiles/ in the bucket and bump this pin.
+    const OVERTURE_RELEASE = '2026-08-19.0';
     function overtureArchiveUrl(theme) {
         return `pmtiles://https://overturemaps-extras-us-west-2.s3.amazonaws.com/tiles/${OVERTURE_RELEASE}/${theme}.pmtiles`;
     }
