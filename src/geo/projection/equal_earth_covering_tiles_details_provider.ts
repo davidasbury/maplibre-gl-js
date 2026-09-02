@@ -7,6 +7,7 @@ import {
     EQUAL_EARTH_WORLD_Y_NORTH_POLE,
     EQUAL_EARTH_WORLD_Y_SOUTH_POLE,
 } from '../equal_earth_coordinate.ts';
+import {pitchedFootprintFactor} from './equal_earth_utils.ts';
 import {IntersectionResult, type IBoundingVolume} from '../../util/primitives/bounding_volume.ts';
 import type {vec4} from 'gl-matrix';
 import type {Frustum} from '../../util/primitives/frustum.ts';
@@ -66,9 +67,12 @@ import type {CoveringTilesDetailsProvider} from './covering_tiles_details_provid
  * is shifted by `360 * wrap` before being compared to the window, so only
  * the wrap(s) actually overlapping the window pass.
  *
- * Assumptions carried over from v1, unchanged: bearing/pitch are 0
- * project-wide (recorded limitation, not solved here); lambda0 === center.lng
- * (the design's own center-tracking invariant, see `equal_earth_coordinate.ts`).
+ * Assumptions carried over from v1: lambda0 === center.lng (the design's own
+ * center-tracking invariant, see `equal_earth_coordinate.ts`). The v1/v2
+ * bearing/pitch === 0 assumption was retired 2026-09-02: still true for the
+ * pure-EE transforms, but the adaptive composite hands this provider its OWN
+ * transform whose decayed camera angles are nonzero mid-blend — see the
+ * camera-angle expansion in `computeViewportWindow`.
  * New in v2: the longitude half-span uses the MORE CONSERVATIVE (smaller) of
  * the two latitude extremes' x-scales, which slightly over-fetches near the
  * poles rather than under-fetching -- see `computeViewportWindow`.
@@ -115,8 +119,35 @@ function computeViewportWindow(transform: IReadonlyTransform): GeoWindow {
 
     // Viewport half-extent, screen px -> unit-world, with the pixel pad
     // folded in before the division so it scales with zoom automatically.
-    const xHalfUnit = (width / 2 + PAD_PX) / worldSize;
-    const yHalfUnit = (height / 2 + PAD_PX) / worldSize;
+    let xHalfPx = width / 2 + PAD_PX;
+    let yHalfPx = height / 2 + PAD_PX;
+
+    // Camera-angle expansion (owner repro 2026-09-02, adaptive blend +
+    // pitch): the pure-EE transforms hold bearing/pitch at 0, but the
+    // ADAPTIVE transform is the one handed in here mid-blend, and its
+    // decayed camera angles are nonzero until eeness reaches 1 — the
+    // rendered (mostly-mercator) view then shows far more world than the
+    // flat axis-aligned rectangle below, and every tile outside it went
+    // unselected: a world-fixed blank region that rotated with bearing.
+    // Pitch scales both half-extents by the shared pitched-footprint ratio
+    // (far corners of the ground trapezoid are both farther and wider);
+    // bearing rotates the screen rectangle in world space, so the
+    // world-axis-aligned bound mixes the extents. Deliberately conservative
+    // — over-fetching mid-blend beats blank screen; both are exact
+    // identities at pitch = 0 / bearing = 0, so every flat-camera gate is
+    // untouched. LOD for the over-fetch (variable zoom toward the horizon,
+    // as mercator does) remains future work.
+    const pitchFactor = pitchedFootprintFactor(transform.pitch, transform.fovInRadians);
+    xHalfPx *= pitchFactor;
+    yHalfPx *= pitchFactor;
+    if (transform.bearing !== 0) {
+        const cosB = Math.abs(Math.cos(transform.bearingInRadians));
+        const sinB = Math.abs(Math.sin(transform.bearingInRadians));
+        [xHalfPx, yHalfPx] = [cosB * xHalfPx + sinB * yHalfPx, sinB * xHalfPx + cosB * yHalfPx];
+    }
+
+    const xHalfUnit = xHalfPx / worldSize;
+    const yHalfUnit = yHalfPx / worldSize;
 
     const centerY = equalEarthWorldFromLngLat(center.lng, center.lat).y;
 

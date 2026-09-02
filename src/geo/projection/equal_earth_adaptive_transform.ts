@@ -3,9 +3,10 @@ import {TransformHelper} from '../transform_helper.ts';
 import {MercatorTransform} from './mercator_transform.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
-import {clamp, degreesToRadians, lerp, zoomScale} from '../../util/util.ts';
+import {clamp, lerp, zoomScale} from '../../util/util.ts';
 import {mercatorXfromLng, mercatorYfromLat} from '../mercator_coordinate.ts';
 import {equalEarthWorldFromLngLat, equalEarthXScaleAtLat, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
+import {pitchedFootprintFactor} from './equal_earth_utils.ts';
 import type {OverscaledTileID, UnwrappedTileID, CanonicalTileID} from '../../tile/tile_id.ts';
 
 import Point from '@mapbox/point-geometry';
@@ -456,6 +457,24 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         // again. The order matters: the mercator apply with forceOverrideZ
         // reads the helper's Z values, which must be valid by then.
         this._equalEarthTransform.apply(this, false);
+        if (this.isEqualEarthRendering && (this.pitch !== 0 || this.bearing !== 0 || this.roll !== 0)) {
+            // Mid-blend with live (decayed but nonzero) camera angles
+            // (owner repro 2026-09-02): the EE child clamps its camera to
+            // flat, so its farZ is a top-down value — forcing that onto the
+            // pitched mercator endpoint far-clipped everything near the
+            // horizon. Let mercator compute its own pitched Z range, then
+            // push the ENCOMPASSING range into both children so the
+            // shader's clip-position mix reads consistent depths from
+            // mainMatrix and fallbackMatrix. This branch is unreachable at
+            // pitch/bearing/roll = 0 (eeness 1 always decays to it), so the
+            // flat-camera choreography below is bit-identical to before.
+            this._mercatorTransform.apply(this, false);
+            this._helper._nearZ = Math.min(this._equalEarthTransform.nearZ, this._mercatorTransform.nearZ);
+            this._helper._farZ = Math.max(this._equalEarthTransform.farZ, this._mercatorTransform.farZ);
+            this._equalEarthTransform.apply(this, false, true);
+            this._mercatorTransform.apply(this, true, true);
+            return;
+        }
         this._helper._nearZ = this._equalEarthTransform.nearZ;
         this._helper._farZ = this._equalEarthTransform.farZ;
         this._mercatorTransform.apply(this, true, this.isEqualEarthRendering);
@@ -601,13 +620,10 @@ export class EqualEarthAdaptiveTransform implements ITransform {
      * pitch=0, so this is a zero-behavior-change no-op for every
      * existing pitch=0 gate.
      */
-    private static readonly MAX_PITCH_SAFETY_MARGIN_DEGREES = 8;
     private _pitchSafetyFactor(): number {
-        if (this.pitch <= 0) return 1;
-        const halfFov = this.fovInRadians / 2;
-        const maxPitchRad = degreesToRadians(90 - EqualEarthAdaptiveTransform.MAX_PITCH_SAFETY_MARGIN_DEGREES) - halfFov;
-        const pitchRad = clamp(degreesToRadians(this.pitch), 0, Math.max(0, maxPitchRad));
-        return Math.tan(pitchRad + halfFov) / Math.tan(halfFov);
+        // Shared with the covering-tiles window since 2026-09-02 — one
+        // formula, two consumers (constrain here, tile selection there).
+        return pitchedFootprintFactor(this.pitch, this.fovInRadians);
     }
 
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {

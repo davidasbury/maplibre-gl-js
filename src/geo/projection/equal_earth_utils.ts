@@ -53,3 +53,27 @@ export function unprojectFromEqualEarthWorldCoordinates(worldSize: number, point
     const {lng, lat} = lngLatFromEqualEarthWorld(point.x / worldSize, point.y / worldSize, lambda0);
     return new LngLat(lng, lat);
 }
+
+const PITCHED_FOOTPRINT_SAFETY_MARGIN_DEGREES = 8;
+
+/**
+ * How much farther, as a ratio, the ground footprint of a pitched camera
+ * reaches than flat-camera math assumes (2026-07-24 pitch/void constrain
+ * round; hoisted here 2026-09-02 so the covering-tiles window shares it).
+ * The ray at the top of the screen leaves the camera at `pitch + halfFov`
+ * from nadir — not just `pitch`, and ground distance grows with `tan`, not
+ * `cos`, as that angle approaches the horizon — so the ratio is
+ * `tan(pitch + halfFov) / tan(halfFov)`, clamped so a pitch approaching
+ * (90° − halfFov) — looking at the literal horizon — can't blow up
+ * unboundedly. Exact identity (factor 1) at pitch = 0.
+ * @param pitchDegrees - Camera pitch in degrees.
+ * @param fovInRadians - Full vertical field of view in radians.
+ * @returns Multiplier ≥ 1 for flat-math screen half-extents.
+ */
+export function pitchedFootprintFactor(pitchDegrees: number, fovInRadians: number): number {
+    if (pitchDegrees <= 0) return 1;
+    const halfFov = fovInRadians / 2;
+    const maxPitchRad = (90 - PITCHED_FOOTPRINT_SAFETY_MARGIN_DEGREES) * Math.PI / 180 - halfFov;
+    const pitchRad = Math.min(Math.max(pitchDegrees * Math.PI / 180, 0), Math.max(0, maxPitchRad));
+    return Math.tan(pitchRad + halfFov) / Math.tan(halfFov);
+}
