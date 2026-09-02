@@ -6,7 +6,6 @@ import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {clamp, lerp, zoomScale} from '../../util/util.ts';
 import {mercatorXfromLng, mercatorYfromLat} from '../mercator_coordinate.ts';
 import {equalEarthWorldFromLngLat, equalEarthXScaleAtLat, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
-import {pitchedFootprintFactor} from './equal_earth_utils.ts';
 import type {OverscaledTileID, UnwrappedTileID, CanonicalTileID} from '../../tile/tile_id.ts';
 
 import Point from '@mapbox/point-geometry';
@@ -597,38 +596,33 @@ export class EqualEarthAdaptiveTransform implements ITransform {
      * and a below-floor URL zoom stuck with voids top and bottom.
      */
     /**
-     * Pitch/void interaction fix (owner repro, 2026-07-24): the vertical
-     * clamp above is flat-camera math (screen pixels <-> world-Y via a
-     * straight ratio) — under a nonzero pitch (still nonzero mid-blend
-     * during the ease-to-flat decay above, or intentionally left nonzero
-     * in pure mercator), a pitched camera reveals MORE world extent
-     * toward the horizon (up-screen) than that flat math assumes,
-     * exposing real void beyond the correctly-for-pitch-0 content edge —
-     * reproduced at Svalbard: identical center/zoom mid-blend, pitch=60
-     * shows a hard void band above y≈327/700, pitch=0 fills edge-to-edge.
-     * Approximated (not full frustum math, which needs the real
-     * projection/camera matrix) by comparing the ground distance a ray
-     * at the TOP of the screen reaches at this pitch vs. at pitch 0:
-     * that ray leaves the camera at `pitch + halfFov` from nadir (not
-     * just `pitch` — a naive `1/cos(pitch)` term undershoots badly,
-     * since the top-of-screen ray is already `halfFov` past the pitch
-     * angle itself, and ground distance grows with `tan`, not `cos`, as
-     * that angle approaches the horizon), so the ratio is
-     * `tan(pitch + halfFov) / tan(halfFov)`. Clamped so a pitch
-     * approaching (90 - halfFov) — looking at the literal horizon —
-     * can't blow the floor up unboundedly. Exact identity (factor 1) at
-     * pitch=0, so this is a zero-behavior-change no-op for every
-     * existing pitch=0 gate.
+     * Pitch and the vertical clamp — a reversal (2026-09-02). The
+     * 2026-07-24 "pitch/void" round inflated this constrain's effective
+     * screen height by the pitched-footprint ratio (up to ~14x at pitch
+     * 60), after an owner repro at Svalbard: pitch=60 mid-blend showed a
+     * hard void band above y≈327/700 where pitch=0 filled edge-to-edge.
+     * That band is now understood as (mostly) the two flat-camera bugs
+     * fixed 2026-09-02 — the covering-tiles window and the forced flat
+     * farZ never selected/rendered tiles toward the pitched horizon, so
+     * real content drew as void. The inflated clamp treated the symptom
+     * by dragging the center equatorward until the broken region left
+     * the screen — and at high latitudes that jump was considerable
+     * (owner repro 2026-09-02: blend entry at lat ~78 snapped the center
+     * several degrees toward the equator the instant pitch engaged).
+     *
+     * The clamp is therefore flat-camera math again, matching upstream
+     * mercator, whose constrain ignores pitch entirely: a pitched view
+     * near the world's top may legitimately see past the pole line, the
+     * same way pitched mercator sees past the ±85.05° cut — and with
+     * tile selection now pitch-aware (`pitchedFootprintFactor` lives on
+     * in the covering-tiles window), everything up to that content edge
+     * actually renders. If a genuinely-beyond-the-pole vista mid-blend
+     * ever needs suppressing, the fix must be an asymmetric, bearing-
+     * aware clamp on the up-screen side only — never a symmetric
+     * inflation, which is what caused the jump.
      */
-    private _pitchSafetyFactor(): number {
-        // Shared with the covering-tiles window since 2026-09-02 — one
-        // formula, two consumers (constrain here, tile selection there).
-        return pitchedFootprintFactor(this.pitch, this.fovInRadians);
-    }
-
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {
         const screenHeight = this.size.y;
-        const effectiveScreenHeight = screenHeight * this._pitchSafetyFactor();
         // Blended content extent: lat ±90 renders at mix(mercator-edge 0/1,
         // EE pole line) — i.e. the pole lines slide outward toward the
         // mercator world edges as eeness falls.
@@ -637,14 +631,14 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         const contentHeightUnit = yBottom - yTop;
         let minZoomForFit = this.minZoom;
         if (screenHeight > 0) {
-            minZoomForFit = Math.max(this.minZoom, Math.log2(effectiveScreenHeight / (contentHeightUnit * this.tileSize)));
+            minZoomForFit = Math.max(this.minZoom, Math.log2(screenHeight / (contentHeightUnit * this.tileSize)));
         }
         const constrainedZoom = clamp(+zoom, minZoomForFit, this.maxZoom);
         let constrainedLat = clamp(lngLat.lat, -90, 90);
 
         const worldSize = this.tileSize * zoomScale(constrainedZoom);
-        const minCenterY = yTop * worldSize + effectiveScreenHeight / 2;
-        const maxCenterY = yBottom * worldSize - effectiveScreenHeight / 2;
+        const minCenterY = yTop * worldSize + screenHeight / 2;
+        const maxCenterY = yBottom * worldSize - screenHeight / 2;
         if (minCenterY > maxCenterY) {
             constrainedLat = 0;
         } else {

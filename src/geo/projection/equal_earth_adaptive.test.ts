@@ -305,3 +305,25 @@ describe('mid-blend pitched tile budget (owner report 2026-09-02: greedy fetch f
         expect(tiles.length).toBeLessThan(30);
     });
 });
+
+describe('high-latitude pitched blend entry (owner repro 2026-09-02: center jumped toward the equator)', () => {
+    // The constrain's 2026-07-24 pitch inflation multiplied the clamp's
+    // screen height by up to ~14x, so a high-latitude center got dragged
+    // equatorward the instant the blend's decayed pitch engaged. The clamp
+    // is flat-camera math again (matching upstream mercator, whose
+    // constrain ignores pitch): the center must hold its latitude.
+    test('center latitude holds through the blend with full pitch requested', () => {
+        // Deep in the blend (eeness 0.75, zoom 4.5) the pole line has slid
+        // most of the way in while the decayed pitch is still nonzero —
+        // the regime where the inflated clamp bit hardest (~2.5° equator-
+        // ward at lat 78 pre-fix).
+        const transform = new EqualEarthAdaptiveTransform();
+        transform.resize(1400, 800);
+        transform.setZoom(4.5);
+        transform.setPitch(60);
+        transform.setCenter(new LngLat(15, 78)); // Svalbard-ish
+        transform.setTransitionState(0.75, 0);
+        transform.setCenter(new LngLat(15, 78)); // re-assert post-blend, as a pan would
+        expect(transform.center.lat).toBeCloseTo(78, 1);
+    });
+});
