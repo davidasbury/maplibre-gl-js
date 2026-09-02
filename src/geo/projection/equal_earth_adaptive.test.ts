@@ -6,6 +6,8 @@ import {EvaluationParameters} from '../../style/evaluation_parameters.ts';
 import {type TransitionParameters} from '../../style/properties.ts';
 import {LngLat} from '../lng_lat.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
+import {MercatorTransform} from './mercator_transform.ts';
+import {coveringTiles} from './covering_tiles.ts';
 
 const BLEND_EXPRESSION = ['interpolate', ['linear'], ['zoom'], 4, 'equal-earth', 6, 'mercator'];
 
@@ -195,5 +197,76 @@ describe('blend-aware constrain (owner pole-clamp design, 2026-07-23)', () => {
             }
             prev = lat;
         }
+    });
+});
+
+describe('mid-blend pitched camera (owner repro 2026-09-02: half-blank screen on zoom-out)', () => {
+    // The bug: entering the blend with a tilted view, tile selection and the
+    // shared far plane both came from the EE child, whose camera is clamped
+    // flat — the pitched, rotated, mostly-mercator render showed world the
+    // flat window never selected (a world-fixed blank region that rotated
+    // with bearing) and far-clipped the rest near the horizon.
+    function createPitchedTransform(eeness: number, pitch: number, bearing: number): EqualEarthAdaptiveTransform {
+        const transform = new EqualEarthAdaptiveTransform();
+        transform.resize(800, 600);
+        transform.setZoom(5);
+        transform.setCenter(new LngLat(10, 45));
+        transform.setPitch(pitch);
+        transform.setBearing(bearing);
+        transform.setTransitionState(eeness, 0);
+        return transform;
+    }
+
+    // Same camera state on a plain upstream MercatorTransform — a code path
+    // sharing no logic with the EE window (real frustum intersection), so
+    // agreement here is an independent check, not self-confirmation.
+    function mercatorTwin(transform: EqualEarthAdaptiveTransform): MercatorTransform {
+        const merc = new MercatorTransform();
+        merc.resize(800, 600);
+        merc.setZoom(transform.zoom);
+        merc.setCenter(transform.center);
+        merc.setPitch(transform.pitch);
+        merc.setBearing(transform.bearing);
+        return merc;
+    }
+
+    test('covering tiles cover the whole pitched+rotated mercator view at blend entry', () => {
+        const transform = createPitchedTransform(0.05, 60, 45);
+        expect(transform.pitch).toBeCloseTo(57, 5); // decayed, but very much nonzero
+        const merc = mercatorTwin(transform);
+        // Not an exact-key superset: the EE provider's latitude-adaptive
+        // tile zoom (2026-07-23) legitimately selects coarser tiles at
+        // higher latitudes, so a mercator tile counts as covered when the
+        // adaptive set holds it or any ancestor at the same wrap.
+        const adaptiveKeys = new Set(coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10})
+            .map((t) => `${t.canonical.z}/${t.canonical.x}/${t.canonical.y}/${t.wrap}`));
+        const mercTiles = coveringTiles(merc, {tileSize: 512, minzoom: 0, maxzoom: 10});
+        expect(mercTiles.length).toBeGreaterThan(0);
+        const covered = (tile: OverscaledTileID) => {
+            for (let z = tile.canonical.z; z >= 0; z--) {
+                const dz = tile.canonical.z - z;
+                if (adaptiveKeys.has(`${z}/${tile.canonical.x >> dz}/${tile.canonical.y >> dz}/${tile.wrap}`)) return true;
+            }
+            return false;
+        };
+        const missing = mercTiles.filter((t) => !covered(t)).map((t) => `${t.canonical.z}/${t.canonical.x}/${t.canonical.y}/${t.wrap}`);
+        expect(missing).toEqual([]);
+    });
+
+    test('flat camera keeps the original regional window (no over-fetch at pitch 0)', () => {
+        const flat = createPitchedTransform(0.05, 0, 0);
+        const flatCount = coveringTiles(flat, {tileSize: 512, minzoom: 0, maxzoom: 10}).length;
+        const worldTilesAtZ4 = 16 * 16;
+        expect(flatCount).toBeLessThan(worldTilesAtZ4 / 4);
+    });
+
+    test('mid-blend far plane reaches the pitched mercator horizon', () => {
+        const transform = createPitchedTransform(0.05, 60, 0);
+        const merc = mercatorTwin(transform);
+        expect(transform.farZ).toBeGreaterThanOrEqual(merc.farZ * 0.999);
+        // And the pitched far plane is genuinely farther than the flat one —
+        // i.e. the encompassing branch actually engaged.
+        const flat = createPitchedTransform(0.05, 0, 0);
+        expect(transform.farZ).toBeGreaterThan(flat.farZ);
     });
 });
