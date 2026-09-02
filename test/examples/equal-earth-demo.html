@@ -1574,6 +1574,10 @@
         zoom,
         pitch: pitchInit
     });
+    // Top-right, clear of the diagnostics panel (top-left). visualizePitch
+    // makes the compass click call resetNorthPitch(), leveling pitch too --
+    // wanted here because the pitch demos enter via ?pitch=60 URLs.
+    map.addControl(new maplibregl.NavigationControl({visualizePitch: true}));
     let clipOn = false; // live transform state; checkbox wiring still happens at 'load'
     // Clip flags must land on the FIRST styled frame, not at the 'load'
     // event (owner report, 2026-07-23, confirmed by a headless state
