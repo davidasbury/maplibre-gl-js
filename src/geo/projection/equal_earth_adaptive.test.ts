@@ -270,3 +270,38 @@ describe('mid-blend pitched camera (owner repro 2026-09-02: half-blank screen on
         expect(transform.farZ).toBeGreaterThan(flat.farZ);
     });
 });
+
+describe('mid-blend pitched tile budget (owner report 2026-09-02: greedy fetch froze the browser)', () => {
+    // The camera-angle window expansion alone selected every tile at the
+    // full covering zoom out to the pitched horizon — 920 z5 tiles at blend
+    // entry on a 1400x800 view. With a pitched camera the provider now
+    // enables the shared distance-based LOD, collapsing far rows to coarser
+    // zooms exactly as pitched mercator does (147 tiles, z2..z7 pyramid).
+    function createTransform(zoom: number, eeness: number, pitch: number, bearing: number): EqualEarthAdaptiveTransform {
+        const transform = new EqualEarthAdaptiveTransform();
+        transform.resize(1400, 800);
+        transform.setZoom(zoom);
+        transform.setCenter(new LngLat(10, 45));
+        transform.setPitch(pitch);
+        transform.setBearing(bearing);
+        transform.setTransitionState(eeness, 0);
+        return transform;
+    }
+
+    test('blend entry, full pitch: bounded, with a coarser-toward-horizon pyramid', () => {
+        const transform = createTransform(5.95, 0.025, 60, 45);
+        const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
+        expect(tiles.length).toBeGreaterThan(0);
+        expect(tiles.length).toBeLessThan(300);
+        const zooms = new Set(tiles.map((t) => t.canonical.z));
+        expect(zooms.size).toBeGreaterThan(1); // LOD actually engaged
+    });
+
+    test('flat camera keeps constant-zoom selection (LOD stays off)', () => {
+        const transform = createTransform(5.95, 0.025, 0, 0);
+        const tiles = coveringTiles(transform, {tileSize: 512, minzoom: 0, maxzoom: 10});
+        const zooms = new Set(tiles.map((t) => t.canonical.z));
+        expect(zooms.size).toBe(1);
+        expect(tiles.length).toBeLessThan(30);
+    });
+});
