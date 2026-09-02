@@ -258,13 +258,23 @@ export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDeta
      * `transform`, called exactly once per `coveringTiles()` before any tile
      * is visited. Repurposed as a "begin frame" hook to compute and cache
      * this call's geographic window (v2: `computeViewportWindow`, an
-     * analytic construction -- no unprojection sampling). Always returns
-     * false: Stage A has no pitch/tilt correctness (recorded in the step 5
-     * notes), so there is no LOD-by-distance concept to offer yet.
+     * analytic construction -- no unprojection sampling).
+     *
+     * Returns false for every flat camera (all pure-EE renders): no
+     * LOD-by-distance concept there, unchanged since Stage A. A PITCHED
+     * camera — only possible mid-blend under the adaptive composite —
+     * enables the shared distance-based LOD (owner report 2026-09-02,
+     * greedy-fetch follow-up): the camera-angle window expansion alone
+     * selected every tile at the full covering zoom out to the pitched
+     * horizon, thousands at blend entry, and the browser locked up.
+     * `defaultCalculateTileZoom` collapses distant rows to coarser zooms
+     * exactly as pitched mercator does; `distanceToTile2d` below has been
+     * implemented (inert) since v1 for precisely this consumer, and
+     * `getTileZoomBias` still applies on top per the shared traversal.
      */
     allowVariableZoom(transform: IReadonlyTransform, _options: CoveringTilesOptionsInternal): boolean {
         this._window = computeViewportWindow(transform);
-        return false;
+        return transform.pitch > 0;
     }
 
     /**
