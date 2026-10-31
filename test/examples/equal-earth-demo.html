@@ -13,14 +13,15 @@
          else's branding/CC BY-SA, and a data URI needs no fetch at all. -->
     <link rel='icon' type='image/svg+xml' href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="%23141e28"/><ellipse cx="16" cy="16" rx="13" ry="8.5" fill="%23cfe0ec"/><path d="M6 11c4-3 9-2.5 13-1.5 3.5.9 6 2 6 4 0 2.5-4 3-7 4.5-3 1.5-8 2-10.5-.5C5 15 4.5 12.5 6 11z" fill="%23d8e8c8"/><g stroke="%237a9cb8" stroke-width="0.75" fill="none" opacity="0.85"><path d="M3 16h26"/><path d="M16 7.5v17"/><path d="M9.6 9.3C7.2 13.2 7.2 18.8 9.6 22.7"/><path d="M22.4 9.3c2.4 3.9 2.4 9.5 0 13.4"/></g><ellipse cx="16" cy="16" rx="13" ry="8.5" fill="none" stroke="%233a5a72" stroke-width="1"/></svg>'/>
     <link rel='stylesheet' href='../../dist/maplibre-gl.css' />
-    <!-- ?controls=0 hides the diagnostics panel (#diag) for clean
-         screenshots/embeds; ?controls=1 or no param shows it. Classic
+    <!-- The diagnostics panel (#diag) is hidden by default (owner request
+         2026-10-31) so a shared link opens on a clean map; ?controls=1
+         shows it. The gates all load with ?controls=1. Classic
          inline script in <head>, not the module below, so the class lands
          before first paint and the panel never flashes. The panel stays in
          the DOM (display:none only), so its controls and the URL-driven
          modes keep working. -->
     <script>
-        if (new URLSearchParams(window.location.search).get('controls') === '0') {
+        if (new URLSearchParams(window.location.search).get('controls') !== '1') {
             document.documentElement.classList.add('no-controls');
         }
     </script>
@@ -149,7 +150,7 @@
            coast/image / graticule+tissot pattern) or a conditional .diag-sub
            row hidden by default (the exag / z_a-z_b pattern). Collapsing
            sections does not buy headroom: the gates measure the default
-           panel, which is fully expanded on purpose. */
+           (?controls=1) panel, which is fully expanded on purpose. */
         .diag-toggle,
         .diag-toggle label {
             pointer-events: auto;
