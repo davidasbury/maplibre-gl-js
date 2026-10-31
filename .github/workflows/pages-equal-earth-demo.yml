@@ -84,11 +84,22 @@ jobs:
             git show "origin/${branch}:test/examples/equal-earth-demo.html" \
                > "$dest/test/examples/equal-earth-demo.html"
             local url="./test/examples/equal-earth-demo.html${query}"
+            # The script forwards the short link's own query and hash onto
+            # the demo URL (e.g. /esri/?controls=1), with the visitor's params
+            # overriding the variant default (so /esri/?source=demotiles
+            # wins over source=esritopo). A plain meta refresh would drop
+            # them; it stays only as the no-JS fallback.
             cat > "$dest/index.html" <<HTML
           <!doctype html>
           <meta charset="utf-8">
           <title>Equal Earth demo - MapLibre GL JS fork</title>
-          <meta http-equiv="refresh" content="0; url=${url}">
+          <script>
+            var u = new URL('${url}', location.href);
+            new URLSearchParams(location.search).forEach(function (v, k) { u.searchParams.set(k, v); });
+            u.hash = location.hash;
+            location.replace(u.href);
+          </script>
+          <noscript><meta http-equiv="refresh" content="0; url=${url}"></noscript>
           <link rel="canonical" href="${url}">
           <p><a href="${url}">Equal Earth demo</a></p>
           HTML
