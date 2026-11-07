@@ -1,11 +1,9 @@
-
-uniform lowp float u_device_pixel_ratio;
 uniform lowp float u_lineatlas_width;
 uniform sampler2D u_image;
 uniform float u_mix;
 
 in vec2 v_normal;
-flat in vec2 v_width2;
+in vec2 v_width2;
 in vec2 v_tex_a;
 in vec2 v_tex_b;
 in float v_gamma_scale;
@@ -29,6 +27,8 @@ void main() {
     #pragma maplibre: initialize lowp float floorwidth
     #pragma maplibre: initialize mediump vec4 dasharray_from
     #pragma maplibre: initialize mediump vec4 dasharray_to
+
+    clipAntimeridian();
 
     // Calculate the distance of the pixel from the line in pixels.
     float dist = length(v_normal) * v_width2.s;

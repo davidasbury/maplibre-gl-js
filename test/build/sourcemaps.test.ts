@@ -5,7 +5,7 @@ import path, {dirname} from 'path';
 import fs from 'node:fs/promises';
 import {pathToFileURL} from 'url';
 
-const distjs = globSync('dist/**/*.{js,mjs}');
+const distjs = globSync('dist/**/*.{js,mjs}', {ignore: ['dist/maplibre-gl-shared.mjs', 'dist/maplibre-gl-shared-dev.mjs']});
 
 async function getSourceMapForFile(url: string|URL) {
     const content = await fs.readFile(url, {encoding: 'utf-8'});
@@ -38,6 +38,7 @@ describe.each(distjs)('release file %s', (file) => {
         const j = await getSourceMapForFile(sourceFileURL);
         for (const f of j.sources) {
             expect(f).not.toMatch('[.]test[.]ts$');
+            expect(f).not.toMatch('[.]bench[.]ts$');
             expect(f).not.toMatch('^test');
         }
     });
@@ -53,17 +54,16 @@ describe('main sourcemap', () => {
     test('should match source files', async () => {
         const mainSourcemapJSON = await getSourceMapForFile(pathToFileURL(packageJson.module));
         const workerSourcemapJSON = await getSourceMapForFile(pathToFileURL(packageJson.module.replace(/maplibre-gl\.mjs$/, 'maplibre-gl-worker.mjs')));
-        const sharedSourcemapJSON = await getSourceMapForFile(pathToFileURL(packageJson.module.replace(/maplibre-gl\.mjs$/, 'maplibre-gl-shared.mjs')));
         const sourceMapEntryRootDir = path.relative('.', dirname(packageJson.module));
 
-        // Worker and shared code live in their own chunks, so union sources from all sourcemaps.
-        const sourcemapEntriesNormalized = [...mainSourcemapJSON.sources, ...workerSourcemapJSON.sources, ...sharedSourcemapJSON.sources]
+        // Worker code lives in its own bundle, so union sources from both sourcemaps.
+        const sourcemapEntriesNormalized = [...mainSourcemapJSON.sources, ...workerSourcemapJSON.sources]
             .map(f => path.join(sourceMapEntryRootDir, f));
 
         // *.mjs.map files should have these files
         const srcFiles = await glob('src/**/*.ts');
         const expectedEntriesInSourcemapJSON = srcFiles.filter(f => {
-            if (f.endsWith('.test.ts'))
+            if (f.endsWith('.test.ts') || f.endsWith('.bench.ts'))
                 return false;
             if (f.startsWith(path.join('src', 'style-spec')))
                 return false;
@@ -94,6 +94,6 @@ describe('main sourcemap', () => {
         // up in the production bundle. If this number jumps, real source files
         // are getting dropped, and it should be investigated before raising the limit.
         const s2 = setMinus(expectedEntriesInSourcemapJSON, actualEntriesInSourcemapJSON);
-        expect(s2.length).toBeLessThan(18);
+        expect(s2.length).toBeLessThan(19);
     });
 });

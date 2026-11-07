@@ -8,7 +8,10 @@ export type ProjectionMatrix = Mat4f32 | Mat4f64;
  * Projection data used by renderer shader uniforms. Renderer matrices are stored
  * as 32-bit floats so WebGL can consume them directly without per-upload copies.
  */
-export type RendererProjectionData = ProjectionData<Mat4f32>;
+export type RendererProjectionData = ProjectionData<Mat4f32> & {
+    /** Draws of one frame with the same key share one uniform buffer. */
+    uniformBufferKey?: string;
+};
 
 /**
  * Projection data exposed to custom layers. Some matrices are stored as 64-bit
@@ -76,6 +79,14 @@ export type ProjectionData<MainMatrix extends mat4 = mat4, FallbackMatrix extend
      * Uniform name: `u_projection_ee_quad_vv`.
      */
     equalEarthQuadVV?: [number, number, number, number];
+    /**
+     * Whether line fragments outside the tile's X extent should be discarded: true for the zoom 0 tile under globe projection, false otherwise.
+     * The z0 tile covers the whole world, so its buffer wraps around the planet onto the tile itself,
+     * drawing geometry near the antimeridian twice. Stencil clipping cannot remove this same-pixel overlap,
+     * so lines are clipped in the fragment shader instead (fills are clipped during subdivision).
+     * Uniform name: `u_projection_clip_antimeridian`.
+     */
+    clipAntimeridian: boolean;
 };
 
 /**

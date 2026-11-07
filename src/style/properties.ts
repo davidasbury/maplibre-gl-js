@@ -1,4 +1,4 @@
-import {clone, extend, easeCubicInOut} from '../util/util.ts';
+import {clone, deepEqual, extend, easeCubicInOut, warnOnce} from '../util/util.ts';
 import {interpolates, type Color, type StylePropertySpecification, normalizePropertyExpression,
     type Feature,
     type FeatureState,
@@ -9,7 +9,7 @@ import {interpolates, type Color, type StylePropertySpecification, normalizeProp
 import {register} from '../util/web_worker_transfer.ts';
 import {EvaluationParameters} from './evaluation_parameters.ts';
 
-import {type CanonicalTileID} from '../tile/tile_id.ts';
+import type {CanonicalTileID} from '../tile/tile_id.ts';
 
 type TimePoint = number;
 
@@ -89,6 +89,12 @@ export class PropertyValue<T, R> {
         return this.expression.globalStateRefs || new Set<string>();
     }
 
+    /** Whether the expression reads one of the global state keys in `refs`. */
+    readsGlobalState(refs: string[]): boolean {
+        const globalStateRefs = this.getGlobalStateRefs();
+        return refs.some(ref => globalStateRefs.has(ref));
+    }
+
     possiblyEvaluate(
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
@@ -124,7 +130,9 @@ class TransitionablePropertyValue<T, R> {
         this.value = new PropertyValue(property, undefined, rootKey, globalState);
     }
 
+    /** The same `PropertyValue` means `setValue` was never called, so there is nothing to transition to. */
     transitioned(parameters: TransitionParameters, prior: TransitioningPropertyValue<T, R>): TransitioningPropertyValue<T, R> {
+        if (prior.value === this.value) return prior;
         return new TransitioningPropertyValue(this.property, this.value, prior,
             extend({}, parameters.transition, this.transition), parameters.now);
     }
@@ -175,6 +183,18 @@ export class Transitionable<Props> {
         this._values[name].value = new PropertyValue(this._values[name].property, value === null ? undefined : clone(value), this._propertyRootKey(name), this._globalState);
     }
 
+    /** Applies a whole spec, skipping the values we already hold so they do not transition. */
+    setValues(values: {[name: string]: unknown}): void {
+        for (const name in values) {
+            const value = values[name];
+            if (name.endsWith(TRANSITION_SUFFIX)) {
+                this.setTransition(name.slice(0, -TRANSITION_SUFFIX.length) as keyof Props, value);
+            } else if (!deepEqual(this._values[name].value.value, value)) {
+                this.setValue(name as keyof Props, value);
+            }
+        }
+    }
+
     getTransition<S extends keyof Props>(name: S): TransitionSpecification | void {
         return clone(this._values[name].transition);
     }
@@ -184,6 +204,33 @@ export class Transitionable<Props> {
             this._values[name] = new TransitionablePropertyValue(this._values[name].property, this._propertyRootKey(name), this._globalState);
         }
         this._values[name].transition = clone(value) || undefined;
+    }
+
+    /** Keeps the transitions running in `transitioning` on `priorGlobalState` where they read one of `refs` live. */
+    retainPriorGlobalState(refs: string[], priorGlobalState: Record<string, any>, transitioning: Transitioning<Props>): void {
+        for (const name of Object.keys(transitioning._values)) {
+            for (let step: TransitioningPropertyValue<any, unknown> = transitioning._values[name]; step; step = step.prior) {
+                const {value} = step;
+                if (!value.property.specification.transition || value.isDataDriven() ||
+                    value.expression._globalState !== this._globalState || !value.readsGlobalState(refs)) continue;
+
+                step.value = new PropertyValue(value.property, value.value, this._propertyRootKey(name as keyof Props), priorGlobalState);
+            }
+        }
+    }
+
+    /** Reads every value that reads one of `refs` again and transitions it from what `transitioning` shows. */
+    applyGlobalStateChange(refs: string[], priorGlobalState: Record<string, any>, transitioning: Transitioning<Props>, parameters: TransitionParameters): Transitioning<Props> {
+        this.retainPriorGlobalState(refs, priorGlobalState, transitioning);
+        let changed = false;
+        for (const name of Object.keys(this._values)) {
+            const {value} = this._values[name];
+            if (!value.readsGlobalState(refs)) continue;
+
+            this.setValue(name as keyof Props, value.value);
+            changed = true;
+        }
+        return changed ? this.transitioned(parameters, transitioning) : transitioning;
     }
 
     serialize(): any {
@@ -472,6 +519,26 @@ export class PossiblyEvaluated<Props, PossibleEvaluatedProps> {
 }
 
 /**
+ * Returns the length of the array value, or undefined if the value is not an array or a style spec array wrapper.
+ */
+function getArrayValueLength(value: unknown): number | undefined {
+    if (Array.isArray(value)) {
+        return value.length;
+    }
+    const values = (value as {values?: unknown})?.values;
+    return Array.isArray(values) ? values.length : undefined;
+}
+
+/**
+ * Returns true if the two values are arrays of different length, either bare arrays or style spec array wrappers.
+ */
+function isNonInterpolableArrayChange(a: unknown, b: unknown): boolean {
+    const lengthA = getArrayValueLength(a);
+    const lengthB = getArrayValueLength(b);
+    return lengthA !== undefined && lengthB !== undefined && lengthA !== lengthB;
+}
+
+/**
  * @internal
  * An implementation of `Property` for properties that do not permit data-driven (source or composite) expressions.
  * This restriction allows us to declare statically that the result of possibly evaluating this kind of property
@@ -492,6 +559,10 @@ export class DataConstantProperty<T> implements Property<T, T> {
     }
 
     interpolate(a: T, b: T, t: number): T {
+        if (isNonInterpolableArrayChange(a, b)) {
+            warnOnce(`Property "${this.name}" is trying to interpolate arrays of different lengths. Rendering may 'jump'.`);
+            return b;
+        }
         const interpolationType = this.specification.type as keyof typeof interpolates;
         const interpolationFn = interpolates[interpolationType] as ((from: T, to: T, t: number) => T) | undefined;
         if (interpolationFn) {
@@ -551,6 +622,11 @@ export class DataDrivenProperty<T> implements Property<T, PossiblyEvaluatedPrope
         // `PossiblyEvaluated._values`.
         if (a.value.value === undefined || b.value.value === undefined) {
             return new PossiblyEvaluatedPropertyValue(this, {kind: 'constant', value: undefined}, a.parameters);
+        }
+
+        if (isNonInterpolableArrayChange(a.value.value, b.value.value)) {
+            warnOnce(`Property "${this.name}" is trying to interpolate arrays of different lengths. Rendering may 'jump'.`);
+            return b;
         }
 
         const interpolationType = this.specification.type as keyof typeof interpolates;
