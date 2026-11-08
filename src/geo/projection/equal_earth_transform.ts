@@ -1,13 +1,13 @@
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {MercatorCoordinate, latFromMercatorY, mercatorZfromAltitude} from '../mercator_coordinate.ts';
 import Point from '@mapbox/point-geometry';
-import {clamp, createMat4f64, degreesToRadians, createIdentityMat4f32, warnOnce, zoomScale, type Mat4f32, type Mat4f64} from '../../util/util.ts';
+import {clamp, createMat4f64, degreesToRadians, radiansToDegrees, scaleZoom, createIdentityMat4f32, warnOnce, zoomScale, type Mat4f32, type Mat4f64} from '../../util/util.ts';
 import {type mat2, mat4, vec3, vec4} from 'gl-matrix';
 import {UnwrappedTileID, OverscaledTileID, type CanonicalTileID, calculateTileKey} from '../../tile/tile_id.ts';
 import {interpolates} from '@maplibre/maplibre-gl-style-spec';
-import {type PointProjection} from '../../symbol/projection.ts';
 import {LngLatBounds} from '../lng_lat_bounds.ts';
-import {getMercatorHorizon, maxMercatorHorizonAngle, cameraMercatorCoordinateFromCenterAndRotation, calculateTileMatrix} from './mercator_utils.ts';
+import {getMercatorHorizon, maxMercatorHorizonAngle, cameraMercatorCoordinateFromCenterAndRotation, calculateTileMatrix, getMercatorTileCoordinates} from './mercator_utils.ts';
+import {type CameraState, getCenterOffset} from '../camera_state.ts';
 import {equalEarthWorldFromLngLat, lngLatFromEqualEarthWorld, equalEarthXScaleAtLat, latFromEqualEarthWorldY, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE, EQUAL_EARTH_SQRT_AREA_RATIO} from '../equal_earth_coordinate.ts';
 import {projectToEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {EXTENT} from '../../data/extent.ts';
@@ -16,8 +16,9 @@ import {EqualEarthCoveringTilesDetailsProvider} from './equal_earth_covering_til
 import {Frustum} from '../../util/primitives/frustum.ts';
 import {fastInvertProjMat4} from '../../util/fast_maths.ts';
 
+import type {PointProjection} from '../../symbol/projection.ts';
 import type {Terrain} from '../../render/terrain.ts';
-import type {IReadonlyTransform, ITransform, TransformConstrainFunction} from '../transform_interface.ts';
+import type {CameraOptionsFromTo, IReadonlyTransform, ITransform, NearFarZ, TransformConstrainFunction, WorldCoordinateHelper} from '../transform_interface.ts';
 import type {TransformOptions} from '../transform_helper.ts';
 import type {PaddingOptions} from '../edge_insets.ts';
 import type {CustomLayerProjectionData, ProjectionDataParams, RendererProjectionData} from './projection_data.ts';
@@ -134,7 +135,7 @@ export class EqualEarthTransform implements ITransform {
         return this._helper.pixelsToGLUnits;
     }
     get centerOffset(): Point {
-        return this._helper.centerOffset;
+        return getCenterOffset(this._cameraState);
     }
     get size(): Point {
         return this._helper.size;
@@ -239,7 +240,7 @@ export class EqualEarthTransform implements ITransform {
         this._helper.clearNearFarZOverride();
     }
     getCameraQueryGeometry(queryGeometry: Point[]): Point[] {
-        return this._helper.getCameraQueryGeometry(this.getCameraPoint(), queryGeometry);
+        return this._helper.getCameraQueryGeometry(queryGeometry);
     }
 
     get tileSize(): number {
@@ -330,15 +331,18 @@ export class EqualEarthTransform implements ITransform {
         return this._helper.constrainOverride;
     }
     public get nearZ(): number {
-        return this._helper.nearZ;
+        return this._nearZ;
     }
     public get farZ(): number {
-        return this._helper.farZ;
+        return this._farZ;
+    }
+    public get nearFarZOverride(): NearFarZ | null {
+        return this._helper.nearFarZOverride;
     }
     public get autoCalculateNearFarZ(): boolean {
         return this._helper.autoCalculateNearFarZ;
     }
-    setTransitionState(_value: number, _error: number): void {
+    setTransitionState(_value: number): void {
         // Do nothing
     }
     //
@@ -346,6 +350,8 @@ export class EqualEarthTransform implements ITransform {
     //
 
     private _cameraPosition: vec3;
+    private _nearZ: number;
+    private _farZ: number;
 
     private _projectionMatrix: mat4;
     private _viewProjMatrix: mat4;
@@ -369,15 +375,24 @@ export class EqualEarthTransform implements ITransform {
 
     private _coveringTilesDetailsProvider;
 
-    constructor(options?: TransformOptions) {
-        this._helper = new TransformHelper({
+    /**
+     * @param options - Initial state. Ignored when `sharedHelper` is given, which already carries it.
+     * @param sharedHelper - Camera to use instead of owning one, so that a composing transform such as
+     * `EqualEarthAdaptiveTransform` keeps a single copy of the state. Its owner then drives
+     * {@link _calcMatrices} and owns the camera posture (the adaptive transform eases pitch to 0
+     * itself), so the pitch clamp below applies only to a standalone transform.
+     */
+    constructor(options?: TransformOptions, sharedHelper?: TransformHelper) {
+        this._helper = sharedHelper ?? new TransformHelper({
             calcMatrices: () => this._calcMatrices(),
             defaultConstrain: (center, zoom) => { return this.defaultConstrain(center, zoom); }
         }, options);
-        // v1 camera posture: pitch bounds forced to 0 regardless of the
-        // TransformOptions the Map passed (its defaults allow 60).
-        this._helper.setMinPitch(0);
-        this._helper.setMaxPitch(0);
+        if (!sharedHelper) {
+            // v1 camera posture: pitch bounds forced to 0 regardless of the
+            // TransformOptions the Map passed (its defaults allow 60).
+            this._helper.setMinPitch(0);
+            this._helper.setMaxPitch(0);
+        }
         // Stage A step 6 ("Covering tiles v1"): EE-aware naive-bbox provider.
         // See equal_earth_covering_tiles_details_provider.ts and
         // docs/resources/2026-07-20-stage-a-step6-covering-tiles.md (outer
@@ -391,8 +406,16 @@ export class EqualEarthTransform implements ITransform {
         return clone;
     }
 
-    public apply(that: IReadonlyTransform, constrain: boolean, forceOverrideZ?: boolean): void {
-        this._helper.apply(that, constrain, forceOverrideZ);
+    private get _cameraState(): Readonly<CameraState> {
+        return this._helper.cameraState;
+    }
+
+    get worldCoordinateHelper(): WorldCoordinateHelper {
+        return this._helper.worldCoordinateHelper;
+    }
+
+    public apply(that: IReadonlyTransform, constrain: boolean): void {
+        this._helper.apply(that, constrain);
         // The helper copies bearing/pitch/roll wholesale — the entry path
         // for a tilted camera when switching projections (e.g. mercator →
         // equal-earth via setProjection). Clamp them here too.
@@ -420,11 +443,11 @@ export class EqualEarthTransform implements ITransform {
         // mercator's do, so the same corner-unprojection logic that finds
         // "which wrap indices are on screen" for mercator applies unchanged.
         const result = [new UnwrappedTileID(0, tileID)];
-        if (this._helper._renderWorldCopies) {
+        if (this._cameraState.renderWorldCopies) {
             const utl = this.screenPointToMercatorCoordinate(new Point(0, 0));
-            const utr = this.screenPointToMercatorCoordinate(new Point(this._helper._width, 0));
-            const ubl = this.screenPointToMercatorCoordinate(new Point(this._helper._width, this._helper._height));
-            const ubr = this.screenPointToMercatorCoordinate(new Point(0, this._helper._height));
+            const utr = this.screenPointToMercatorCoordinate(new Point(this._cameraState.width, 0));
+            const ubl = this.screenPointToMercatorCoordinate(new Point(this._cameraState.width, this._cameraState.height));
+            const ubr = this.screenPointToMercatorCoordinate(new Point(0, this._cameraState.height));
             const w0 = Math.floor(Math.min(utl.x, utr.x, ubl.x, ubr.x));
             const w1 = Math.floor(Math.max(utl.x, utr.x, ubl.x, ubr.x));
 
@@ -454,7 +477,7 @@ export class EqualEarthTransform implements ITransform {
     recalculateZoomAndCenter(terrain?: Terrain): void {
         // find position the camera is looking on
         const center = this.screenPointToLocation(this.centerPoint, terrain);
-        const elevation = terrain ? terrain.getElevationForLngLatZoom(center, this._helper._tileZoom) : 0;
+        const elevation = terrain ? terrain.getElevationForLngLatZoom(center, this._cameraState.tileZoom) : 0;
         this._helper.recalculateZoomAndCenter(elevation);
     }
 
@@ -500,7 +523,7 @@ export class EqualEarthTransform implements ITransform {
         const newCenterLng = lnglat.lng - (a.x - b.x) / scale;
 
         this.setCenter(new LngLat(newCenterLng, newCenterLat));
-        if (this._helper._renderWorldCopies) {
+        if (this._cameraState.renderWorldCopies) {
             this.setCenter(this.center.wrap());
         }
     }
@@ -508,7 +531,7 @@ export class EqualEarthTransform implements ITransform {
     locationToScreenPoint(lnglat: LngLat, terrain?: Terrain): Point {
         const coord: EqualEarthCoordinate = equalEarthWorldFromLngLat(lnglat.lng, lnglat.lat, this.center.lng);
         return terrain ?
-            this.coordinatePoint(coord, terrain.getElevationForLngLat(lnglat, this), this._pixelMatrix3D) :
+            this.coordinatePoint(coord, terrain.getElevationForLngLat(lnglat, this._cameraState.tileZoom), this._pixelMatrix3D) :
             this.coordinatePoint(coord);
     }
 
@@ -539,7 +562,7 @@ export class EqualEarthTransform implements ITransform {
         // non-goal for this projection and this branch is unverified beyond
         // that coordinate-space conversion.
         if (terrain) {
-            const coordinate = terrain.pointCoordinate(p);
+            const coordinate = this.screenTerrainPointToMercatorCoordinate(p, terrain);
             if (coordinate != null) {
                 const lngLat = coordinate.toLngLat();
                 // Same unit-square y-down world convention as the AtZ path
@@ -597,17 +620,38 @@ export class EqualEarthTransform implements ITransform {
     }
 
     getBounds(): LngLatBounds {
-        const top = Math.max(0, this._helper._height / 2 - getMercatorHorizon(this));
+        const top = Math.max(0, this._cameraState.height / 2 - getMercatorHorizon(this));
         return new LngLatBounds()
             .extend(this.screenPointToLocation(new Point(0, top)))
-            .extend(this.screenPointToLocation(new Point(this._helper._width, top)))
-            .extend(this.screenPointToLocation(new Point(this._helper._width, this._helper._height)))
-            .extend(this.screenPointToLocation(new Point(0, this._helper._height)));
+            .extend(this.screenPointToLocation(new Point(this._cameraState.width, top)))
+            .extend(this.screenPointToLocation(new Point(this._cameraState.width, this._cameraState.height)))
+            .extend(this.screenPointToLocation(new Point(0, this._cameraState.height)));
+    }
+
+    /**
+     * Where the ray through a screen point meets the terrain. Flat-ground answer: the Equal Earth camera is top-down (pitch is clamped
+     * to 0), so a ray walk over the DEM would land within a pixel of the flat
+     * unprojection, and terrain under this projection remains a non-goal.
+     * Returns null off the projection outline, where there is no surface.
+     */
+    screenTerrainPointToMercatorCoordinate(p: Point, _terrain: Terrain): MercatorCoordinate | null {
+        const coord = this.screenPointToEqualEarthCoordinateAtZ(p);
+        if (coord.y < EQUAL_EARTH_WORLD_Y_NORTH_POLE || coord.y > EQUAL_EARTH_WORLD_Y_SOUTH_POLE) {
+            return null;
+        }
+        const lngLat = lngLatFromEqualEarthWorld(coord.x, coord.y, this.center.lng);
+        return MercatorCoordinate.fromLngLat(new LngLat(lngLat.lng, lngLat.lat));
+    }
+
+    screenPointToLocationAtElevation(p: Point, elevation: number): LngLat {
+        const coord = this.screenPointToEqualEarthCoordinateAtZ(p, elevation - this._cameraState.elevation);
+        const {lng, lat} = lngLatFromEqualEarthWorld(coord.x, coord.y, this.center.lng);
+        return new LngLat(lng, lat);
     }
 
     isPointOnMapSurface(p: Point, terrain?: Terrain): boolean {
         if (terrain) {
-            const coordinate = terrain.pointCoordinate(p);
+            const coordinate = this.screenTerrainPointToMercatorCoordinate(p, terrain);
             return coordinate != null;
         }
         return (p.y > this.height / 2 - getMercatorHorizon(this));
@@ -783,14 +827,11 @@ export class EqualEarthTransform implements ITransform {
         return this._helper.calculateCenterFromCameraLngLatAlt(lnglat, alt, bearing, pitch);
     }
 
-    _calculateNearFarZIfNeeded(cameraToSeaLevelDistance: number, limitedPitchRadians: number, offset: Point): void {
-        if (!this._helper.autoCalculateNearFarZ) {
-            return;
-        }
+    _calculateNearFarZ(cameraToSeaLevelDistance: number, limitedPitchRadians: number, offset: Point): NearFarZ {
         // In case of negative minimum elevation (e.g. the dead see, under the sea maps) use a lower plane for calculation
         const minRenderDistanceBelowCameraInMeters = 100;
         const minElevation = Math.min(this.elevation, this.minElevationForCurrentTile, this.getCameraAltitude() - minRenderDistanceBelowCameraInMeters);
-        const cameraToLowestPointDistance = cameraToSeaLevelDistance - minElevation * this._helper._pixelPerMeter / Math.cos(limitedPitchRadians);
+        const cameraToLowestPointDistance = cameraToSeaLevelDistance - minElevation * this._cameraState.pixelsPerMeter / Math.cos(limitedPitchRadians);
         const lowestPlane = minElevation < 0 ? cameraToLowestPointDistance : cameraToSeaLevelDistance;
 
         // Find the distance from the center point [width/2 + offset.x, height/2 + offset.y] to the
@@ -813,7 +854,7 @@ export class EqualEarthTransform implements ITransform {
         // Add a bit extra to avoid precision problems when a fragment's distance is exactly `furthestDistance`
         const topHalfMinDistance = Math.min(topHalfSurfaceDistance, topHalfSurfaceDistanceHorizon);
 
-        this._helper._farZ = (Math.cos(Math.PI / 2 - limitedPitchRadians) * topHalfMinDistance + lowestPlane) * 1.01;
+        const farZ = (Math.cos(Math.PI / 2 - limitedPitchRadians) * topHalfMinDistance + lowestPlane) * 1.01;
 
         // The larger the value of nearZ is
         // - the more depth precision is available for features (good)
@@ -822,11 +863,16 @@ export class EqualEarthTransform implements ITransform {
         // Other values work for mapbox-gl-js but deck.gl was encountering precision issues
         // when rendering custom layers. This value was experimentally chosen and
         // seems to solve z-fighting issues in deck.gl while not clipping buildings too close to the camera.
-        this._helper._nearZ = this._helper._height / 50;
+        const nearZ = this._cameraState.height / 50;
+        return {nearZ, farZ};
     }
 
-    _calcMatrices(): void {
-        if (!this._helper._height) return;
+    /**
+     * @param nearFarZ - The depth range to use instead of computing one, by default the camera state's override.
+     * `EqualEarthAdaptiveTransform` passes its mercator child's range, so both children share one range.
+     */
+    _calcMatrices(nearFarZ: NearFarZ | null = this._cameraState.nearFarZOverride): void {
+        if (!this._cameraState.height) return;
 
         const offset = this.centerOffset;
         // lambda0 === center.lng means Delta-lambda is always exactly 0 here,
@@ -838,24 +884,25 @@ export class EqualEarthTransform implements ITransform {
         // knowing the identity holds.
         const point = projectToEqualEarthWorldCoordinates(this.worldSize, this.center, this.center.lng);
         const x = point.x, y = point.y;
-        this._helper._pixelPerMeter = mercatorZfromAltitude(1, this.center.lat) * this.worldSize;
 
         // Calculate the camera to sea-level distance in pixel in respect of terrain
         const limitedPitchRadians = degreesToRadians(Math.min(this.pitch, maxMercatorHorizonAngle));
-        const cameraToSeaLevelDistance = Math.max(this._helper.cameraToCenterDistance / 2, this._helper.cameraToCenterDistance + this._helper._elevation * this._helper._pixelPerMeter / Math.cos(limitedPitchRadians));
+        const cameraToSeaLevelDistance = Math.max(this._helper.cameraToCenterDistance / 2, this._helper.cameraToCenterDistance + this._cameraState.elevation * this._cameraState.pixelsPerMeter / Math.cos(limitedPitchRadians));
 
-        this._calculateNearFarZIfNeeded(cameraToSeaLevelDistance, limitedPitchRadians, offset);
+        const depthRange = nearFarZ ?? this._calculateNearFarZ(cameraToSeaLevelDistance, limitedPitchRadians, offset);
+        this._nearZ = depthRange.nearZ;
+        this._farZ = depthRange.farZ;
 
         // matrix for conversion from location to clip space(-1 .. 1)
         let m: mat4;
         m = new Float64Array(16);
-        mat4.perspective(m, this.fovInRadians, this._helper._width / this._helper._height, this._helper._nearZ, this._helper._farZ);
+        mat4.perspective(m, this.fovInRadians, this._cameraState.width / this._cameraState.height, this._nearZ, this._farZ);
         this._invProjMatrix = new Float64Array(16);
         fastInvertProjMat4(this._invProjMatrix, m);
 
         // Apply center of perspective offset
-        m[8] = -offset.x * 2 / this._helper._width;
-        m[9] = offset.y * 2 / this._helper._height;
+        m[8] = -offset.x * 2 / this._cameraState.width;
+        m[9] = offset.y * 2 / this._cameraState.height;
         this._projectionMatrix = mat4.clone(m);
 
         mat4.scale(m, m, [1, -1, 1]);
@@ -875,7 +922,7 @@ export class EqualEarthTransform implements ITransform {
         // than kept-but-repurposed under a now-misleading name.
 
         // scale vertically to meters per pixel (inverse of ground resolution):
-        mat4.scale(m, m, [1, 1, this._helper._pixelPerMeter]);
+        mat4.scale(m, m, [1, 1, this._cameraState.pixelsPerMeter]);
 
         // matrix for conversion from world space to screen coordinates in 2D
         this._pixelMatrix = mat4.multiply(new Float64Array(16), this.clipSpaceToPixelsMatrix, m);
@@ -918,7 +965,7 @@ export class EqualEarthTransform implements ITransform {
         // create a fog matrix, same es proj-matrix but with near clipping-plane in mapcenter
         // needed to calculate a correct z-value for fog calculation, because projMatrix z value is not
         this._fogMatrix = new Float64Array(16);
-        mat4.perspective(this._fogMatrix, this.fovInRadians, this.width / this.height, cameraToSeaLevelDistance, this._helper._farZ);
+        mat4.perspective(this._fogMatrix, this.fovInRadians, this.width / this.height, cameraToSeaLevelDistance, this._farZ);
         this._fogMatrix[8] = -offset.x * 2 / this.width;
         this._fogMatrix[9] = offset.y * 2 / this.height;
         mat4.scale(this._fogMatrix, this._fogMatrix, [1, -1, 1]);
@@ -927,7 +974,7 @@ export class EqualEarthTransform implements ITransform {
         mat4.rotateX(this._fogMatrix, this._fogMatrix, this.pitchInRadians);
         mat4.rotateZ(this._fogMatrix, this._fogMatrix, -this.bearingInRadians);
         mat4.translate(this._fogMatrix, this._fogMatrix, [-x, -y, 0]);
-        mat4.scale(this._fogMatrix, this._fogMatrix, [1, 1, this._helper._pixelPerMeter]);
+        mat4.scale(this._fogMatrix, this._fogMatrix, [1, 1, this._cameraState.pixelsPerMeter]);
         mat4.translate(this._fogMatrix, this._fogMatrix, [0, 0, -this.elevation]); // elevate camera over terrain
 
         // matrix for conversion from world space to screen coordinates in 3D
@@ -939,7 +986,7 @@ export class EqualEarthTransform implements ITransform {
         // is an odd integer to preserve rendering to the pixel grid. We're rotating this shift based on the angle
         // of the transformation so that 0°, 90°, 180°, and 270° rasters are crisp, and adjust the shift so that
         // it is always <= 0.5 pixels.
-        const xShift = (this._helper._width % 2) / 2, yShift = (this._helper._height % 2) / 2,
+        const xShift = (this._cameraState.width % 2) / 2, yShift = (this._cameraState.height % 2) / 2,
             angleCos = Math.cos(this.bearingInRadians), angleSin = Math.sin(-this.bearingInRadians),
             dx = x - Math.round(x) + angleCos * xShift + angleSin * yShift,
             dy = y - Math.round(y) + angleCos * yShift + angleSin * xShift;
@@ -1069,27 +1116,45 @@ export class EqualEarthTransform implements ITransform {
         return this._helper.getCameraPoint();
     }
 
+    /**
+     * Mercator's computation (upstream moved it off the helper). The
+     * from/to camera geometry is 3D and this projection's camera is clamped
+     * flat, so mercator world space is the same answer the helper gave.
+     */
+    calculateCameraOptionsFromTo(from: LngLatLike, altitudeFrom: number, to: LngLatLike, altitudeTo: number): CameraOptionsFromTo {
+        const fromLngLat = LngLat.convert(from);
+        const toLngLat = LngLat.convert(to);
+        const fromMerc = MercatorCoordinate.fromLngLat(fromLngLat, altitudeFrom);
+        const toMerc = MercatorCoordinate.fromLngLat(toLngLat, altitudeTo);
+        const dx = toMerc.x - fromMerc.x;
+        const dy = toMerc.y - fromMerc.y;
+        const dz = toMerc.z - fromMerc.z;
+        const distance3D = Math.hypot(dx, dy, dz);
+        if (distance3D === 0) throw new Error('Can\'t calculate camera options with same From and To');
+        const groundDistance = Math.hypot(dx, dy);
+        const zoom = scaleZoom(this._cameraState.cameraToCenterDistance / distance3D / this._cameraState.tileSize);
+        const bearing = radiansToDegrees(Math.atan2(dx, -dy));
+        let pitch = radiansToDegrees(Math.acos(groundDistance / distance3D));
+        pitch = dz < 0 ? 90 - pitch : 90 + pitch;
+        return {center: toMerc.toLngLat(), elevation: altitudeTo, zoom, pitch, bearing};
+    }
+
     getCameraAltitude(): number {
-        return this._helper.getCameraAltitude();
+        return Math.cos(this._cameraState.pitchInRadians) * this._cameraState.cameraToCenterDistance / this._cameraState.pixelsPerMeter + this._cameraState.elevation;
     }
 
     getCameraLngLat(): LngLat {
-        const pixelPerMeter = mercatorZfromAltitude(1, this.center.lat) * this.worldSize;
-        const cameraToCenterDistanceMeters = this._helper.cameraToCenterDistance / pixelPerMeter;
-        const camMercator = cameraMercatorCoordinateFromCenterAndRotation(this.center, this.elevation, this.pitch, this.bearing, cameraToCenterDistanceMeters);
+        const mercUnitsPerMeter = mercatorZfromAltitude(1, this.center.lat);
+        const pixelPerMeter = mercUnitsPerMeter * this.worldSize;
+        const cameraToCenterDistanceMeters = this._cameraState.cameraToCenterDistance / pixelPerMeter;
+        const centerMercator = MercatorCoordinate.fromLngLat(this.center, this.elevation);
+        const camMercator = cameraMercatorCoordinateFromCenterAndRotation(centerMercator, this.pitch, this.bearing, cameraToCenterDistanceMeters * mercUnitsPerMeter);
         return camMercator.toLngLat();
-    }
-
-    lngLatToCameraDepth(lngLat: LngLat, elevation: number): number {
-        const coord = equalEarthWorldFromLngLat(lngLat.lng, lngLat.lat, this.center.lng);
-        const p = [coord.x * this.worldSize, coord.y * this.worldSize, elevation, 1] as vec4;
-        vec4.transformMat4(p, p, this._viewProjMatrix);
-        return (p[2] / p[3]);
     }
 
     getProjectionData(params: ProjectionDataParams): RendererProjectionData {
         const {overscaledTileID, aligned, applyTerrainMatrix, applyGlobeMatrix} = params;
-        const mercatorTileCoordinates = this._helper.getMercatorTileCoordinates(overscaledTileID);
+        const mercatorTileCoordinates = getMercatorTileCoordinates(overscaledTileID);
         if (overscaledTileID) {
             // Mechanism 2 (Stage B step 8): fold both world-copy wrap and the
             // live lambda0 into the shader's recovered lng in one seam,
@@ -1142,6 +1207,7 @@ export class EqualEarthTransform implements ITransform {
                 clippingPlane: [0, 0, 0, 0],
                 projectionTransition: applyGlobeMatrix ? 1 : 0,
                 fallbackMatrix,
+                clipAntimeridian: false,
                 equalEarthQuadUV: linearized.quadUV,
                 equalEarthQuadVV: linearized.quadVV,
             };
@@ -1157,6 +1223,7 @@ export class EqualEarthTransform implements ITransform {
             // this only drives the TS-side sky/atmosphere blends.
             projectionTransition: applyGlobeMatrix ? 1 : 0,
             fallbackMatrix,
+            clipAntimeridian: false,
             // Explicit zeros: the shader ignores these in polynomial mode,
             // but deterministic uniform state beats stale values.
             equalEarthQuadUV: [0, 0, 0, 0],
@@ -1216,7 +1283,7 @@ export class EqualEarthTransform implements ITransform {
      * shader's `projectTileWithElevation` (terrain remains a non-goal;
      * z is 0 in every non-terrain call).
      */
-    projectTileCoordinates(x: number, y: number, unwrappedTileID: UnwrappedTileID, getElevation: (x: number, y: number) => number): PointProjection {
+    projectTileCoordinates(x: number, y: number, unwrappedTileID: UnwrappedTileID, elevation?: number): PointProjection {
         const canonical = unwrappedTileID.canonical;
         const zoomScaleInv = 1.0 / (1 << canonical.z);
         const mercatorX = (canonical.x + x / EXTENT) * zoomScaleInv + unwrappedTileID.wrap;
@@ -1224,8 +1291,7 @@ export class EqualEarthTransform implements ITransform {
         const lng = mercatorX * 360 - 180;
         const lat = latFromMercatorY(mercatorY);
         const ee = equalEarthWorldFromLngLat(lng, lat, this.center.lng);
-        const elevation = getElevation ? getElevation(x, y) : 0;
-        const pos = [ee.x, ee.y, elevation, 1] as vec4;
+        const pos = [ee.x, ee.y, elevation ?? 0, 1] as vec4;
         vec4.transformMat4(pos, pos, this._equalEarthMatrix);
         const w = pos[3];
         return {
@@ -1233,14 +1299,6 @@ export class EqualEarthTransform implements ITransform {
             signedDistanceFromCamera: w,
             isOccluded: false
         };
-    }
-
-    populateCache(coords: OverscaledTileID[]): void {
-        for (const coord of coords) {
-            // Return value is thrown away, but this function will still
-            // place the pos matrix into the transform's internal cache.
-            this.calculatePosMatrix(coord);
-        }
     }
 
     getProjectionDataForCustomLayer(applyGlobeMatrix: boolean = true): CustomLayerProjectionData {

@@ -1,4 +1,3 @@
-import type Point from '@mapbox/point-geometry';
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {cameraForBoxAndBearing, type CameraForBoxAndBearingHandlerResult, type EaseToHandlerResult, type EaseToHandlerOptions, type FlyToHandlerResult, type FlyToHandlerOptions, type ICameraHelper, type MapControlsDeltas, updateRotation} from './camera_helper.ts';
 import {normalizeCenter} from '../transform_helper.ts';
@@ -7,6 +6,7 @@ import {getMercatorHorizon} from './mercator_utils.ts';
 import {projectToEqualEarthWorldCoordinates, unprojectFromEqualEarthWorldCoordinates} from './equal_earth_utils.ts';
 import {interpolates} from '@maplibre/maplibre-gl-style-spec';
 
+import type Point from '@mapbox/point-geometry';
 import type {IReadonlyTransform, ITransform} from '../transform_interface.ts';
 import type {CameraForBoundsOptions} from '../../ui/camera.ts';
 import type {PaddingOptions} from '../edge_insets.ts';
@@ -63,8 +63,8 @@ export class EqualEarthCameraHelper implements ICameraHelper {
         tr.setLocationAtPoint(preZoomAroundLoc, deltas.around);
     }
 
-    cameraForBoxAndBearing(options: CameraForBoundsOptions, padding: PaddingOptions, bounds: LngLatBounds, bearing: number, tr: IReadonlyTransform): CameraForBoxAndBearingHandlerResult {
-        return cameraForBoxAndBearing(options, padding, bounds, bearing, tr);
+    cameraForBoxAndBearing(options: CameraForBoundsOptions, fitPadding: PaddingOptions, mapPadding: PaddingOptions, bounds: LngLatBounds, bearing: number, tr: IReadonlyTransform): CameraForBoxAndBearingHandlerResult {
+        return cameraForBoxAndBearing(options, fitPadding, mapPadding, bounds, bearing, tr);
     }
 
     handleJumpToCenterZoom(tr: ITransform, options: { zoom?: number; center?: LngLatLike }): void {

@@ -1,18 +1,19 @@
 import {describe, test, expect} from 'vitest';
 import {EqualEarthAdaptiveProjection} from './equal_earth_adaptive_projection.ts';
 import {EqualEarthAdaptiveTransform} from './equal_earth_adaptive_transform.ts';
-import {createProjectionFromName} from './projection_factory.ts';
+import {createProjectionFromName, routesToEqualEarth} from './projection_factory.ts';
 import {EvaluationParameters} from '../../style/evaluation_parameters.ts';
-import {type TransitionParameters} from '../../style/properties.ts';
 import {LngLat} from '../lng_lat.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
 import {MercatorTransform} from './mercator_transform.ts';
 import {coveringTiles} from './covering_tiles.ts';
 
+import type {TransitionParameters} from '../../style/properties.ts';
+
 const BLEND_EXPRESSION = ['interpolate', ['linear'], ['zoom'], 4, 'equal-earth', 6, 'mercator'];
 
 function projectionAtZoom(zoom: number): EqualEarthAdaptiveProjection {
-    const projection = new EqualEarthAdaptiveProjection({type: BLEND_EXPRESSION} as any);
+    const projection = new EqualEarthAdaptiveProjection({type: BLEND_EXPRESSION} as any, {});
     projection.updateTransitions({transition: false} as any as TransitionParameters);
     projection.recalculate(new EvaluationParameters(zoom));
     return projection;
@@ -23,6 +24,13 @@ describe('EqualEarthAdaptiveProjection', () => {
         expect(projectionAtZoom(0).transitionState).toBe(1);
         expect(projectionAtZoom(3.9).transitionState).toBe(1);
         expect(projectionAtZoom(4).transitionState).toBe(1);
+    });
+
+    test('transitionState: an interpolation between identical projections is that projection', () => {
+        const projection = new EqualEarthAdaptiveProjection({type: ['interpolate', ['linear'], ['zoom'], 4, 'mercator', 6, 'mercator']} as any, {});
+        projection.updateTransitions({transition: false} as any as TransitionParameters);
+        projection.recalculate(new EvaluationParameters(5));
+        expect(projection.transitionState).toBe(0);
     });
 
     test('transitionState: pure mercator above the upper stop', () => {
@@ -47,10 +55,9 @@ describe('EqualEarthAdaptiveProjection', () => {
         expect(projectionAtZoom(7).shaderVariantName).not.toBe('equal-earth');
     });
 
-    test('no globe controls, no latitude error correction', () => {
+    test('no globe controls', () => {
         const projection = projectionAtZoom(5);
         expect(projection.useGlobeControls).toBe(false);
-        expect(projection.latitudeErrorCorrectionRadians).toBe(0);
     });
 });
 
@@ -60,7 +67,7 @@ describe('EqualEarthAdaptiveTransform', () => {
         transform.resize(800, 600);
         transform.setZoom(5);
         transform.setCenter(new LngLat(10, 45));
-        transform.setTransitionState(eeness, 0);
+        transform.setTransitionState(eeness);
         return transform;
     }
 
@@ -119,13 +126,13 @@ describe('EqualEarthAdaptiveTransform', () => {
 
 describe('projection factory routing', () => {
     test('an expression containing equal-earth routes to the adaptive composite', () => {
-        const {projection, transform} = createProjectionFromName(BLEND_EXPRESSION as any);
+        const {projection, transform} = createProjectionFromName(BLEND_EXPRESSION as any, undefined, {});
         expect(projection).toBeInstanceOf(EqualEarthAdaptiveProjection);
         expect(transform).toBeInstanceOf(EqualEarthAdaptiveTransform);
     });
 
     test('the equal-earth-adaptive preset routes to the adaptive composite with the default stops', () => {
-        const {projection} = createProjectionFromName('equal-earth-adaptive' as any);
+        const {projection} = createProjectionFromName('equal-earth-adaptive', undefined, {});
         expect(projection).toBeInstanceOf(EqualEarthAdaptiveProjection);
         const p = projection as EqualEarthAdaptiveProjection;
         p.updateTransitions({transition: false} as any as TransitionParameters);
@@ -136,15 +143,51 @@ describe('projection factory routing', () => {
     });
 
     test('vertical-perspective expressions still route to globe', () => {
-        const {projection} = createProjectionFromName(['interpolate', ['linear'], ['zoom'], 11, 'vertical-perspective', 12, 'mercator'] as any);
+        const {projection} = createProjectionFromName(['interpolate', ['linear'], ['zoom'], 11, 'vertical-perspective', 12, 'mercator'] as any, undefined, {});
         expect(projection).not.toBeInstanceOf(EqualEarthAdaptiveProjection);
+    });
+
+    test('a global-state projection routes by the state\'s current value', () => {
+        expect(routesToEqualEarth(['global-state', 'projectionType'], {projectionType: 'equal-earth'})).toBe(true);
+        expect(routesToEqualEarth(['global-state', 'projectionType'], {projectionType: 'vertical-perspective'})).toBe(false);
+        expect(routesToEqualEarth(['global-state', 'projectionType'], {projectionType: 'mercator'})).toBe(false);
+    });
+
+    test('a case on global state routes by the branch it selects', () => {
+        const expression = ['case', ['global-state', 'equalArea'],
+            ['interpolate', ['linear'], ['zoom'], 4, 'equal-earth', 6, 'mercator'],
+            ['interpolate', ['linear'], ['zoom'], 11, 'vertical-perspective', 12, 'mercator']];
+        expect(routesToEqualEarth(expression, {equalArea: true})).toBe(true);
+        expect(routesToEqualEarth(expression, {equalArea: false})).toBe(false);
+    });
+
+    test('an expression that is mercator at zoom 0 routes on whether it names equal-earth', () => {
+        expect(routesToEqualEarth(['interpolate', ['linear'], ['zoom'], 0, 'mercator', 5, 'equal-earth'], {})).toBe(true);
+        expect(routesToEqualEarth(['interpolate', ['linear'], ['zoom'], 0, 'mercator', 5, 'vertical-perspective'], {})).toBe(false);
+    });
+
+    test('a failing expression routes without throwing', () => {
+        expect(routesToEqualEarth(['string', ['global-state', 'missing']], {})).toBe(false);
+    });
+
+    test('the adaptive composite evaluates global state by reference', () => {
+        const globalState: Record<string, any> = {projectionType: 'equal-earth'};
+        const {projection} = createProjectionFromName(['global-state', 'projectionType'] as any, undefined, globalState);
+        expect(projection).toBeInstanceOf(EqualEarthAdaptiveProjection);
+        const p = projection as EqualEarthAdaptiveProjection;
+        p.updateTransitions({transition: false} as any as TransitionParameters);
+        p.recalculate(new EvaluationParameters(5));
+        expect(p.transitionState).toBe(1);
+        globalState.projectionType = 'mercator';
+        p.recalculate(new EvaluationParameters(5));
+        expect(p.transitionState).toBe(0);
     });
 });
 
 describe('blend-aware constrain (owner pole-clamp design, 2026-07-23)', () => {
     function createTransform(eeness: number, zoom: number, lat: number): EqualEarthAdaptiveTransform {
         const transform = new EqualEarthAdaptiveTransform();
-        transform.setTransitionState(eeness, 0);
+        transform.setTransitionState(eeness);
         transform.resize(1100, 700);
         transform.setZoom(zoom);
         transform.setCenter(new LngLat(16, lat));
@@ -188,15 +231,13 @@ describe('blend-aware constrain (owner pole-clamp design, 2026-07-23)', () => {
         // rising smoothly to 84.02 (t=0, mercator cut-off dock). Steepest
         // near t=1 (~5 deg per 0.05 step — smooth, not a pop); monotonic
         // throughout. Guard both properties.
-        let prev = null;
+        const lats: number[] = [];
         for (let t = 1; t >= -1e-9; t -= 0.05) {
-            const lat = createTransform(+t.toFixed(2), 4.5, 90).center.lat;
-            if (prev !== null) {
-                expect(lat).toBeGreaterThanOrEqual(prev - 1e-9); // monotonic
-                expect(lat - prev).toBeLessThan(6); // continuous (no jump)
-            }
-            prev = lat;
+            lats.push(createTransform(+t.toFixed(2), 4.5, 90).center.lat);
         }
+        const steps = lats.slice(1).map((lat, i) => lat - lats[i]);
+        expect(Math.min(...steps)).toBeGreaterThanOrEqual(-1e-9); // monotonic
+        expect(Math.max(...steps)).toBeLessThan(6); // continuous (no jump)
     });
 });
 
@@ -213,7 +254,7 @@ describe('mid-blend pitched camera (owner repro 2026-09-02: half-blank screen on
         transform.setCenter(new LngLat(10, 45));
         transform.setPitch(pitch);
         transform.setBearing(bearing);
-        transform.setTransitionState(eeness, 0);
+        transform.setTransitionState(eeness);
         return transform;
     }
 
@@ -284,7 +325,7 @@ describe('mid-blend pitched tile budget (owner report 2026-09-02: greedy fetch f
         transform.setCenter(new LngLat(10, 45));
         transform.setPitch(pitch);
         transform.setBearing(bearing);
-        transform.setTransitionState(eeness, 0);
+        transform.setTransitionState(eeness);
         return transform;
     }
 
@@ -322,7 +363,7 @@ describe('high-latitude pitched blend entry (owner repro 2026-09-02: center jump
         transform.setZoom(4.5);
         transform.setPitch(60);
         transform.setCenter(new LngLat(15, 78)); // Svalbard-ish
-        transform.setTransitionState(0.75, 0);
+        transform.setTransitionState(0.75);
         transform.setCenter(new LngLat(15, 78)); // re-assert post-blend, as a pan would
         expect(transform.center.lat).toBeCloseTo(78, 1);
     });

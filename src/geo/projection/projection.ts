@@ -2,10 +2,10 @@ import type {CanonicalTileID} from '../../tile/tile_id.ts';
 import type {PreparedShader} from '../../shaders/shaders.ts';
 import type {Context} from '../../webgl/context.ts';
 import type {Mesh} from '../../render/mesh.ts';
-import type {Program} from '../../webgl/program.ts';
 import type {SubdivisionGranularitySetting} from '../../render/subdivision_granularity_settings.ts';
 import type {ProjectionSpecification} from '@maplibre/maplibre-gl-style-spec';
 import type {EvaluationParameters} from '../../style/evaluation_parameters.ts';
+import type {WorldCoordinateHelper} from '../transform_interface.ts';
 
 /**
  * Custom projections are handled both by a class which implements this `Projection` interface,
@@ -25,14 +25,6 @@ import type {EvaluationParameters} from '../../style/evaluation_parameters.ts';
 
 /**
  * @internal
- */
-export type ProjectionGPUContext = {
-    context: Context;
-    useProgram: (name: string) => Program<any>;
-};
-
-/**
- * @internal
  * Specifies the usage for a square tile mesh:
  * - 'stencil' for drawing stencil masks
  * - 'raster' for drawing raster tiles, hillshade, etc.
@@ -48,6 +40,14 @@ export interface Projection {
      * A short, descriptive name of this projection, such as 'mercator' or 'globe'.
      */
     get name(): ProjectionSpecification['type'];
+
+    /**
+     * @internal
+     * The mapping between geographic coordinates and the world plane the projection's tiles sit in:
+     * mercator for the built-in projections, the CRS's own mapping for a projection registered with `addProjection`.
+     * The transform built for the projection runs on this same instance.
+     */
+    get worldCoordinateHelper(): WorldCoordinateHelper;
 
     /**
      * @internal
@@ -101,21 +101,9 @@ export interface Projection {
 
     /**
      * @internal
-     * Gets the error correction latitude in radians.
-     */
-    get latitudeErrorCorrectionRadians(): number;
-
-    /**
-     * @internal
      * Cleans up any resources the projection created, especially GPU buffers.
      */
     destroy(): void;
-
-    /**
-     * @internal
-     * Runs any GPU-side tasks this projection required. Called at the beginning of every frame.
-     */
-    updateGPUdependent(renderContext: ProjectionGPUContext): void;
 
     /**
      * @internal
@@ -140,10 +128,4 @@ export interface Projection {
      * Returns true if the projection is currently transitioning between two states.
      */
     hasTransition(): boolean;
-
-    /**
-     * @internal
-     * Sets the error query latidude in degrees
-     */
-    setErrorQueryLatitudeDegrees(value: number): void;
 }

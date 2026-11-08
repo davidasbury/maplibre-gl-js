@@ -52,8 +52,8 @@ export class EqualEarthAdaptiveCameraHelper implements ICameraHelper {
         this.currentHelper.handleMapControlsPan(deltas, tr, preZoomAroundLoc);
     }
 
-    cameraForBoxAndBearing(options: CameraForBoundsOptions, padding: PaddingOptions, bounds: LngLatBounds, bearing: number, tr: ITransform): CameraForBoxAndBearingHandlerResult {
-        return this.currentHelper.cameraForBoxAndBearing(options, padding, bounds, bearing, tr);
+    cameraForBoxAndBearing(options: CameraForBoundsOptions, fitPadding: PaddingOptions, mapPadding: PaddingOptions, bounds: LngLatBounds, bearing: number, tr: IReadonlyTransform): CameraForBoxAndBearingHandlerResult {
+        return this.currentHelper.cameraForBoxAndBearing(options, fitPadding, mapPadding, bounds, bearing, tr);
     }
 
     handleJumpToCenterZoom(tr: ITransform, options: { zoom?: number; center?: LngLatLike }): void {
