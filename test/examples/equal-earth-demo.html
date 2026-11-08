@@ -215,7 +215,7 @@
     </div>
     <div class="diag-section" data-section="relief" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-relief">relief <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-relief">
-        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with the 2D relief options. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
+        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with the 2D relief options. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. Unavailable in clipped mode, where the camera stays flat and the outline clip would be lost. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
         <div id="diag-terrain-exag" class="diag-toggle diag-sub" style="display:none" title="3D terrain vertical exaggeration (map.setTerrain exaggeration). Live-updates, no reload; ?exag= persists in the URL. 1.0 = true scale.">
             <label>exag <input type="range" id="diag-exag" min="0" max="5" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-exag-val">1.5</span></label>
         </div>
@@ -849,6 +849,11 @@
     // construct and would clip mid-morph content (and the adaptive
     // transform doesn't carry the EE-only clip flags).
     const useClip = params.get('clip') !== '0' && !useAdaptive;
+    // 3D terrain is unavailable in clipped mode (owner request 2026-11-07):
+    // the static projection keeps the camera flat, so relief never shows,
+    // and terrain renders through a texture the outline clip can't mask, so
+    // the clip vanished. ?terrain=1 on a clipped URL is ignored.
+    if (useClip) terrainOn = false;
 
     // Engine seam-bit stencil clip is the DEFAULT since 2026-07-22 (owner
     // approved after the session-0030 fixes); `?engineclip=0` falls back to
@@ -2244,7 +2249,19 @@
         // terrain > shade > esri hs.
         if (terrainOn) { shadeOn = false; esriHsOn = false; }
         else if (shadeOn) { esriHsOn = false; }
-        terrainCheckbox.disabled = false;
+        // Clipped mode can't show terrain (see useClip); applyClipMode keeps
+        // this in step when the projection radios switch live.
+        function setTerrainAvailable(available) {
+            terrainCheckbox.disabled = !available;
+            if (available || !terrainOn) return;
+            terrainOn = false;
+            terrainCheckbox.checked = false;
+            setUrlParam('terrain', null);
+            refreshTerrainExagRow();
+            applyTerrain();
+        }
+        terrainCheckbox.disabled = useClip;
+        if (useClip) setUrlParam('terrain', null);
         shadeCheckbox.disabled = false;
         esriHsCheckbox.disabled = false;
         terrainCheckbox.checked = terrainOn;
@@ -2323,6 +2340,7 @@
             transform.outlineFitZoomFloor = on;
             transform.clipAtProjectionOutline = on && useEngineClip;
             clipOn = on;
+            setTerrainAvailable(!on);
             if (on) {
                 // Zoom out to the outline-fit floor so the mode is
                 // immediately visible (0 clamps up to the floor).
