@@ -4,11 +4,26 @@ import {terrainUniformValues, terrainDepthUniformValues, terrainHeightUniformVal
 import {CullFaceMode} from '../cull_face_mode.ts';
 import {Color} from '@maplibre/maplibre-gl-style-spec';
 import {ColorMode} from '../color_mode.ts';
+import {VerticalPerspectiveShaderVariantKey} from '../../geo/projection/vertical_perspective_projection.ts';
 
 import type {FrameRenderContext} from '../../render/frame_render_context.ts';
 import type {Terrain, TerrainHeightMapTarget} from '../../render/terrain.ts';
 import type {Tile} from '../../tile/tile.ts';
 import type {Painter} from '../../render/painter.ts';
+
+/**
+ * Whether terrain meshes need the globe's pole geometry. `isRenderingGlobe`
+ * (`transitionState > 0`) is not enough: the Equal Earth adaptive blend also
+ * reports a nonzero transitionState, but its poles are lines, not points, so
+ * pinching an EE pole-row tile is wrong geometry. The 'globe' shader variant
+ * is the exact "globe geometry is active" signal: 'globe' for a transitioned
+ * globe and static vertical-perspective, 'mercator' for globe at transition 0,
+ * and 'mercator'/'equal-earth' for the Equal Earth projections.
+ */
+function usesGlobeMesh(frameRenderContext: FrameRenderContext): boolean {
+    return frameRenderContext.data.isRenderingGlobe &&
+        frameRenderContext.data.projectionShaderVariant?.name === VerticalPerspectiveShaderVariantKey;
+}
 
 /**
  * Redraw the Depth Framebuffer
@@ -28,7 +43,7 @@ function drawDepth(painter: Painter, terrain: Terrain, frameRenderContext: Frame
     context.viewport.set([0, 0, painter.width  / devicePixelRatio, painter.height / devicePixelRatio]);
     context.clear({color: Color.white, depth: 1});
     for (const tile of tiles) {
-        const mesh = terrain.getTerrainMesh(tile.tileID, frameRenderContext.data.isRenderingGlobe);
+        const mesh = terrain.getTerrainMesh(tile.tileID, usesGlobeMesh(frameRenderContext));
         const terrainData = terrain.getTerrainData(tile.tileID);
         const projectionData = tr.getProjectionData({overscaledTileID: tile.tileID, applyTerrainMatrix: false, applyGlobeMatrix: true});
         const uniformValues = terrainDepthUniformValues(terrain.getSkirtLength(tr.zoom));
@@ -51,7 +66,7 @@ function drawTerrain(painter: Painter, terrain: Terrain, tiles: Tile[], frameRen
     context.viewport.set([0, 0, painter.width, painter.height]);
 
     for (const tile of tiles) {
-        const mesh = terrain.getTerrainMesh(tile.tileID, isRenderingGlobe);
+        const mesh = terrain.getTerrainMesh(tile.tileID, usesGlobeMesh(frameRenderContext));
         const texture = painter.renderToTexture.getTexture(tile);
         const terrainData = terrain.getTerrainData(tile.tileID);
         context.activeTexture.set(gl.TEXTURE0);
@@ -88,7 +103,7 @@ function drawTerrainHeightMap(frameRenderContext: FrameRenderContext, terrain: T
             tileSize / (maxX - minX),
             tileSize / (maxY - minY)
         ]);
-        const mesh = terrain.getTerrainMesh(tile.tileID, frameRenderContext.data.isRenderingGlobe);
+        const mesh = terrain.getTerrainMesh(tile.tileID, usesGlobeMesh(frameRenderContext));
         program.draw(context, gl.TRIANGLES, DepthMode.disabled, StencilMode.disabled, ColorMode.unblended, CullFaceMode.disabled, uniformValues, terrainData, null, 'terrain', mesh.vertexBuffer, mesh.indexBuffer, mesh.segments);
     }
     framebuffer.colorAttachment.set(null);
@@ -96,6 +111,7 @@ function drawTerrainHeightMap(frameRenderContext: FrameRenderContext, terrain: T
 
 export {
     drawTerrain,
+    usesGlobeMesh,
     drawDepth,
     drawTerrainHeightMap
 };
