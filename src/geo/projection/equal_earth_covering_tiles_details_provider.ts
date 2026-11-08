@@ -9,10 +9,12 @@ import {
 } from '../equal_earth_coordinate.ts';
 import {pitchedFootprintFactor} from './equal_earth_utils.ts';
 import {IntersectionResult, type IBoundingVolume} from '../../util/primitives/bounding_volume.ts';
+
 import type {vec4} from 'gl-matrix';
 import type {Frustum} from '../../util/primitives/frustum.ts';
 import type {MercatorCoordinate} from '../mercator_coordinate.ts';
 import type {IReadonlyTransform} from '../transform_interface.ts';
+import type {LngLat} from '../lng_lat.ts';
 import type {CoveringTilesOptionsInternal} from './covering_tiles.ts';
 import type {CoveringTilesDetailsProvider} from './covering_tiles_details_provider.ts';
 
@@ -359,6 +361,10 @@ export class EqualEarthCoveringTilesDetailsProvider implements CoveringTilesDeta
         const latOverlap = tileLatMax >= window.latMin && tileLatMin <= window.latMax;
 
         return (lngOverlap && latOverlap) ? TILE_MAYBE_VISIBLE : TILE_NOT_VISIBLE;
+    }
+
+    getCenter(transform: IReadonlyTransform): LngLat {
+        return transform.center;
     }
 
     prepareNextFrame(): void {

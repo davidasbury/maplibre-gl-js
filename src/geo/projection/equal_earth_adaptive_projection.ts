@@ -5,12 +5,14 @@ import {Evented} from '../../util/evented.ts';
 import {EvaluationParameters} from '../../style/evaluation_parameters.ts';
 import {MercatorProjection} from './mercator_projection.ts';
 import {EqualEarthProjection} from './equal_earth_projection.ts';
-import {type Projection, type ProjectionGPUContext, type TileMeshUsage} from './projection.ts';
-import {type PreparedShader} from '../../shaders/shaders.ts';
-import {type SubdivisionGranularitySetting} from '../../render/subdivision_granularity_settings.ts';
-import {type Context} from '../../webgl/context.ts';
-import {type CanonicalTileID} from '../../tile/tile_id.ts';
-import {type Mesh} from '../../render/mesh.ts';
+
+import type {PreparedShader} from '../../shaders/shaders.ts';
+import type {SubdivisionGranularitySetting} from '../../render/subdivision_granularity_settings.ts';
+import type {Context} from '../../webgl/context.ts';
+import type {CanonicalTileID} from '../../tile/tile_id.ts';
+import type {Mesh} from '../../render/mesh.ts';
+import type {Projection, TileMeshUsage} from './projection.ts';
+import type {WorldCoordinateHelper} from '../transform_interface.ts';
 
 /**
  * Stage C (plan step 11): the adaptive Equal Earth projection — Equal Earth
@@ -69,8 +71,9 @@ export class EqualEarthAdaptiveProjection extends Evented implements Projection 
         return this.transitionState > 0;
     }
 
-    // No globe-style GPU latitude error correction for a flat projection.
-    get latitudeErrorCorrectionRadians(): number { return 0; }
+    get worldCoordinateHelper(): WorldCoordinateHelper {
+        return this.currentProjection.worldCoordinateHelper;
+    }
 
     private get currentProjection(): Projection {
         return this.useEqualEarthRendering ? this._equalEarthProjection : this._mercatorProjection;
@@ -113,11 +116,6 @@ export class EqualEarthAdaptiveProjection extends Evented implements Projection 
         this._equalEarthProjection.destroy();
     }
 
-    public updateGPUdependent(context: ProjectionGPUContext): void {
-        this._mercatorProjection.updateGPUdependent(context);
-        this._equalEarthProjection.updateGPUdependent(context);
-    }
-
     public getMeshFromTileID(context: Context, tileID: CanonicalTileID, hasBorder: boolean, allowPoles: boolean, usage: TileMeshUsage): Mesh {
         return this.currentProjection.getMeshFromTileID(context, tileID, hasBorder, allowPoles, usage);
     }
@@ -136,9 +134,5 @@ export class EqualEarthAdaptiveProjection extends Evented implements Projection 
 
     recalculate(parameters: EvaluationParameters): void {
         this.properties = this._transitioning.possiblyEvaluate(parameters);
-    }
-
-    setErrorQueryLatitudeDegrees(_value: number): void {
-        // No error-measurement machinery on either endpoint.
     }
 }

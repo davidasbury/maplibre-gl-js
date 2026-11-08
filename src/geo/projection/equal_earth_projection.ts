@@ -1,10 +1,13 @@
-import type {Context} from '../../webgl/context.ts';
-import type {CanonicalTileID} from '../../tile/tile_id.ts';
-import {type Mesh} from '../../render/mesh.ts';
 import {SubdivisionGranularityExpression, SubdivisionGranularitySetting} from '../../render/subdivision_granularity_settings.ts';
-import type {Projection, ProjectionGPUContext, TileMeshUsage} from './projection.ts';
+import {mercatorWorldCoordinateHelper} from '../mercator_coordinate.ts';
 import {type PreparedShader, shaders} from '../../shaders/shaders.ts';
 import {createTileMeshWithBuffers, type CreateTileMeshOptions} from '../../util/create_tile_mesh.ts';
+
+import type {WorldCoordinateHelper} from '../transform_interface.ts';
+import type {Mesh} from '../../render/mesh.ts';
+import type {Projection, TileMeshUsage} from './projection.ts';
+import type {CanonicalTileID} from '../../tile/tile_id.ts';
+import type {Context} from '../../webgl/context.ts';
 
 export const EqualEarthShaderDefine = '#define PROJECTION_EQUAL_EARTH';
 export const EqualEarthShaderVariantKey = 'equal-earth';
@@ -68,15 +71,17 @@ export class EqualEarthProjection implements Projection {
         return false;
     }
 
-    get latitudeErrorCorrectionRadians(): number {
-        return 0;
+    /**
+     * Tiles stay mercator-addressed under Equal Earth (the shader reprojects
+     * per vertex), and the shared camera helper's world is mercator; the EE
+     * plane lives inside EqualEarthTransform. Same answer as before the
+     * upstream CRS work made this explicit.
+     */
+    get worldCoordinateHelper(): WorldCoordinateHelper {
+        return mercatorWorldCoordinateHelper;
     }
 
     public destroy(): void {
-        // Do nothing.
-    }
-
-    public updateGPUdependent(_: ProjectionGPUContext): void {
         // Do nothing.
     }
 
@@ -116,9 +121,5 @@ export class EqualEarthProjection implements Projection {
 
     public hasTransition(): boolean {
         return false;
-    }
-
-    setErrorQueryLatitudeDegrees(_value: number): void {
-        // Do nothing.
     }
 }

@@ -772,7 +772,7 @@ export class TileManager extends Evented<SourceEventType> {
         if (Date.now() - tile.erroredAt < cooldownMs) return;
         tile.errorRetryCount++;
         tile.state = 'expired';
-        this._loadTile(tile, tileID.key, tile.state);
+        this._loadTile(tile, tileID.key, tile.state, tile.hasData());
     }
 
     _addTile(tileID: OverscaledTileID): Tile {

@@ -1,20 +1,21 @@
-import type {mat2, mat4, vec3, vec4} from 'gl-matrix';
 import {TransformHelper} from '../transform_helper.ts';
 import {MercatorTransform} from './mercator_transform.ts';
 import {EqualEarthTransform} from './equal_earth_transform.ts';
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {clamp, lerp, zoomScale} from '../../util/util.ts';
 import {mercatorXfromLng, mercatorYfromLat} from '../mercator_coordinate.ts';
+import {type CameraState, getCenterOffset} from '../camera_state.ts';
 import {equalEarthWorldFromLngLat, equalEarthXScaleAtLat, EQUAL_EARTH_WORLD_Y_NORTH_POLE, EQUAL_EARTH_WORLD_Y_SOUTH_POLE} from '../equal_earth_coordinate.ts';
-import type {OverscaledTileID, UnwrappedTileID, CanonicalTileID} from '../../tile/tile_id.ts';
-
 import Point from '@mapbox/point-geometry';
+
+import type {OverscaledTileID, UnwrappedTileID, CanonicalTileID} from '../../tile/tile_id.ts';
+import type {mat2, mat4, vec3, vec4} from 'gl-matrix';
 import type {MercatorCoordinate} from '../mercator_coordinate.ts';
 import type {LngLatBounds} from '../lng_lat_bounds.ts';
 import type {Frustum} from '../../util/primitives/frustum.ts';
 import type {Terrain} from '../../render/terrain.ts';
 import type {PointProjection} from '../../symbol/projection.ts';
-import type {IReadonlyTransform, ITransform, TransformConstrainFunction} from '../transform_interface.ts';
+import type {CameraOptionsFromTo, IReadonlyTransform, ITransform, NearFarZ, TransformConstrainFunction, WorldCoordinateHelper} from '../transform_interface.ts';
 import type {TransformOptions} from '../transform_helper.ts';
 import type {PaddingOptions} from '../edge_insets.ts';
 import type {CustomLayerProjectionData, ProjectionDataParams, RendererProjectionData} from './projection_data.ts';
@@ -60,7 +61,7 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         return this._helper.pixelsToGLUnits;
     }
     get centerOffset(): Point {
-        return this._helper.centerOffset;
+        return getCenterOffset(this._cameraState);
     }
     get size(): Point {
         return this._helper.size;
@@ -173,7 +174,7 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         this._helper.clearNearFarZOverride();
     }
     getCameraQueryGeometry(queryGeometry: Point[]): Point[] {
-        return this._helper.getCameraQueryGeometry(this.getCameraPoint(), queryGeometry);
+        return this._helper.getCameraQueryGeometry(queryGeometry);
     }
 
     get tileSize(): number {
@@ -264,10 +265,13 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         return this._helper.constrainOverride;
     }
     public get nearZ(): number {
-        return this._helper.nearZ;
+        return this.currentTransform.nearZ;
     }
     public get farZ(): number {
-        return this._helper.farZ;
+        return this.currentTransform.farZ;
+    }
+    public get nearFarZOverride(): NearFarZ | null {
+        return this._helper.nearFarZOverride;
     }
     public get autoCalculateNearFarZ(): boolean {
         return this._helper.autoCalculateNearFarZ;
@@ -304,7 +308,7 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         return this._eeness > 0;
     }
 
-    setTransitionState(eeness: number, _errorCorrectionValue: number): void {
+    setTransitionState(eeness: number): void {
         this._eeness = eeness ?? 1;
         if (this._eeness >= 1) {
             this._frozenLambda0 = null;
@@ -331,7 +335,14 @@ export class EqualEarthAdaptiveTransform implements ITransform {
             defaultConstrain: (center, zoom) => { return this.defaultConstrain(center, zoom); }
         }, options);
         this._eeness = 1; // Symbol-placement clones never see _updateAnimation; match GlobeTransform's convention.
-        this._mercatorTransform = new MercatorTransform();
+        // Mercator shares this transform's camera (upstream GlobeTransform's
+        // pattern); this transform then drives its _calcMatrices. The Equal
+        // Earth child deliberately keeps its OWN helper: it renders a flat
+        // camera (pitch/bearing/roll clamped to 0) even mid-blend while the
+        // mercator endpoint carries the decayed tilt — the mid-blend pitch
+        // behavior sessions 0067/step 13 tuned. A shared helper would hand it
+        // the tilt. It is synced by apply() in _calcMatrices.
+        this._mercatorTransform = new MercatorTransform(undefined, this._helper);
         this._equalEarthTransform = new EqualEarthTransform();
         // This EE transform is an internal child fed the decayed camera
         // angles every frame; it clamps them to 0 by design, so silence the
@@ -381,8 +392,15 @@ export class EqualEarthAdaptiveTransform implements ITransform {
             this._requestedRoll = that.roll;
         }
         this._applyDecayedCameraAngles();
-        this._mercatorTransform.apply(this, false);
         this._equalEarthTransform.apply(this, false);
+    }
+
+    private get _cameraState(): Readonly<CameraState> {
+        return this._helper.cameraState;
+    }
+
+    get worldCoordinateHelper(): WorldCoordinateHelper {
+        return this._helper.worldCoordinateHelper;
     }
 
     public get projectionMatrix(): mat4 { return this.currentTransform.projectionMatrix; }
@@ -414,6 +432,7 @@ export class EqualEarthAdaptiveTransform implements ITransform {
             clippingPlane: eeProjectionData.clippingPlane,
             projectionTransition: params.applyGlobeMatrix ? this._eeness : 0,
             fallbackMatrix: mercatorProjectionData.fallbackMatrix,
+            clipAntimeridian: false,
             equalEarthQuadUV: eeProjectionData.equalEarthQuadUV,
             equalEarthQuadVV: eeProjectionData.equalEarthQuadVV,
         };
@@ -441,44 +460,49 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         return lerp(mercatorCorrection, eeCorrection, this._eeness);
     }
 
-    public projectTileCoordinates(x: number, y: number, unwrappedTileID: UnwrappedTileID, getElevation: (x: number, y: number) => number): PointProjection {
-        return this.currentTransform.projectTileCoordinates(x, y, unwrappedTileID, getElevation);
+    public projectTileCoordinates(x: number, y: number, unwrappedTileID: UnwrappedTileID, elevation?: number): PointProjection {
+        return this.currentTransform.projectTileCoordinates(x, y, unwrappedTileID, elevation);
     }
 
+    /**
+     * Same depth-range choreography as before the upstream CSC refactor, now
+     * through `_calcMatrices(nearFarZ)` instead of writing the helper's Z:
+     * the EE child (own helper, flat camera) computes its range first; while
+     * EE is rendering, mercator renders with that range so the shader's
+     * clip-position mix reads consistent depths from mainMatrix and
+     * fallbackMatrix. Pure mercator uses mercator's own range (or the user's
+     * override).
+     */
     private _calcMatrices(): void {
-        if (!this._helper._width || !this._helper._height) {
+        if (!this._cameraState.width || !this._cameraState.height) {
             return;
         }
-        // Same Z-sync choreography as GlobeTransform._calcMatrices, with
-        // Equal Earth in vertical-perspective's role: apply the EE child
-        // first and adopt its Z values, then apply mercator — forcing it to
-        // adopt our (EE's) Z range while EE rendering is active — and sync
-        // again. The order matters: the mercator apply with forceOverrideZ
-        // reads the helper's Z values, which must be valid by then.
-        this._equalEarthTransform.apply(this, false);
-        if (this.isEqualEarthRendering && (this.pitch !== 0 || this.bearing !== 0 || this.roll !== 0)) {
+        const equalEarth = this._equalEarthTransform;
+        const mercator = this._mercatorTransform;
+        // apply() runs the EE child's own _calcMatrices with its own range.
+        equalEarth.apply(this, false);
+        if (!this.isEqualEarthRendering) {
+            mercator._calcMatrices();
+            return;
+        }
+        if (this.pitch !== 0 || this.bearing !== 0 || this.roll !== 0) {
             // Mid-blend with live (decayed but nonzero) camera angles
-            // (owner repro 2026-09-02): the EE child clamps its camera to
-            // flat, so its farZ is a top-down value — forcing that onto the
-            // pitched mercator endpoint far-clipped everything near the
-            // horizon. Let mercator compute its own pitched Z range, then
-            // push the ENCOMPASSING range into both children so the
-            // shader's clip-position mix reads consistent depths from
-            // mainMatrix and fallbackMatrix. This branch is unreachable at
-            // pitch/bearing/roll = 0 (eeness 1 always decays to it), so the
-            // flat-camera choreography below is bit-identical to before.
-            this._mercatorTransform.apply(this, false);
-            this._helper._nearZ = Math.min(this._equalEarthTransform.nearZ, this._mercatorTransform.nearZ);
-            this._helper._farZ = Math.max(this._equalEarthTransform.farZ, this._mercatorTransform.farZ);
-            this._equalEarthTransform.apply(this, false, true);
-            this._mercatorTransform.apply(this, true, true);
+            // (owner repro 2026-09-02): the EE child's camera is flat, so its
+            // farZ is a top-down value — forcing that onto the pitched
+            // mercator endpoint far-clipped everything near the horizon. Let
+            // mercator compute its own pitched range, then render both
+            // children with the ENCOMPASSING range. Unreachable at
+            // pitch/bearing/roll = 0 (eeness 1 always decays to it).
+            mercator._calcMatrices();
+            const nearFarZ: NearFarZ = {
+                nearZ: Math.min(equalEarth.nearZ, mercator.nearZ),
+                farZ: Math.max(equalEarth.farZ, mercator.farZ),
+            };
+            equalEarth._calcMatrices(nearFarZ);
+            mercator._calcMatrices(nearFarZ);
             return;
         }
-        this._helper._nearZ = this._equalEarthTransform.nearZ;
-        this._helper._farZ = this._equalEarthTransform.farZ;
-        this._mercatorTransform.apply(this, true, this.isEqualEarthRendering);
-        this._helper._nearZ = this._mercatorTransform.nearZ;
-        this._helper._farZ = this._mercatorTransform.farZ;
+        mercator._calcMatrices({nearZ: equalEarth.nearZ, farZ: equalEarth.farZ});
     }
 
     calculateFogMatrix(unwrappedTileID: UnwrappedTileID): mat4 {
@@ -511,21 +535,24 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         return this._helper.getCameraPoint();
     }
 
+    calculateCameraOptionsFromTo(from: LngLatLike, altitudeFrom: number, to: LngLatLike, altitudeTo: number): CameraOptionsFromTo {
+        return this.currentTransform.calculateCameraOptionsFromTo(from, altitudeFrom, to, altitudeTo);
+    }
+
+    screenPointToLocationAtElevation(p: Point, elevation: number): LngLat {
+        return this.currentTransform.screenPointToLocationAtElevation(p, elevation);
+    }
+
+    screenTerrainPointToMercatorCoordinate(p: Point, terrain: Terrain): MercatorCoordinate | null {
+        return this.currentTransform.screenTerrainPointToMercatorCoordinate(p, terrain);
+    }
+
     getCameraAltitude(): number {
-        return this._helper.getCameraAltitude();
+        return this.currentTransform.getCameraAltitude();
     }
 
     getCameraLngLat(): LngLat {
-        return this._helper.getCameraLngLat();
-    }
-
-    lngLatToCameraDepth(lngLat: LngLat, elevation: number): number {
-        return this.currentTransform.lngLatToCameraDepth(lngLat, elevation);
-    }
-
-    populateCache(coords: OverscaledTileID[]): void {
-        this._mercatorTransform.populateCache(coords);
-        this._equalEarthTransform.populateCache(coords);
+        return this.currentTransform.getCameraLngLat();
     }
 
     getBounds(): LngLatBounds {
@@ -693,7 +720,7 @@ export class EqualEarthAdaptiveTransform implements ITransform {
         const newCenterLng = lnglat.lng + (targetX - refX) / this._blendedXCoeffAtLat(newCenterLat);
 
         this.setCenter(new LngLat(newCenterLng, newCenterLat));
-        if (this._helper._renderWorldCopies) {
+        if (this._cameraState.renderWorldCopies) {
             this.setCenter(this.center.wrap());
         }
     }
