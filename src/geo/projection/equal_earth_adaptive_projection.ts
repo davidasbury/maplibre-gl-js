@@ -38,9 +38,9 @@ export class EqualEarthAdaptiveProjection extends Evented implements Projection 
     _mercatorProjection: MercatorProjection;
     _equalEarthProjection: EqualEarthProjection;
 
-    constructor(projection?: ProjectionSpecification) {
+    constructor(projection: ProjectionSpecification | undefined, globalState: Record<string, any>) {
         super();
-        this._transitionable = new Transitionable(getProperties(), 'projection', undefined);
+        this._transitionable = new Transitionable(getProperties(), 'projection', globalState);
         this.setProjection(projection);
         this._transitioning = this._transitionable.untransitioned();
         this.recalculate(new EvaluationParameters(0));
@@ -57,6 +57,9 @@ export class EqualEarthAdaptiveProjection extends Evented implements Projection 
             return 1;
         }
         if (currentProjectionSpecValue instanceof ProjectionDefinition) {
+            if (currentProjectionSpecValue.from === currentProjectionSpecValue.to) {
+                return currentProjectionSpecValue.from === 'mercator' ? 0 : 1;
+            }
             if (currentProjectionSpecValue.from === 'equal-earth' && currentProjectionSpecValue.to === 'mercator') {
                 return 1 - currentProjectionSpecValue.transition;
             }

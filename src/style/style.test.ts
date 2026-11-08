@@ -18,6 +18,8 @@ import {setNow, restoreNow} from '../util/time_control.ts';
 import {RTLPluginLoadedEventName} from '../source/rtl_text_plugin_status.ts';
 import {MessageType} from '../util/actor_messages.ts';
 import {type MercatorTransform, createMercatorTransform} from '../geo/projection/mercator_transform.ts';
+import {EqualEarthAdaptiveProjection} from '../geo/projection/equal_earth_adaptive_projection.ts';
+import {GlobeProjection} from '../geo/projection/globe_projection.ts';
 
 import type {PossiblyEvaluated} from './properties.ts';
 import type {SymbolLayoutProps, SymbolLayoutPropsPossiblyEvaluated} from './style_layer/symbol_style_layer_properties.g.ts';
@@ -752,6 +754,55 @@ describe('Style._load', () => {
 
         style._load(styleSpec, {validate: false});
         expect(warn).not.toHaveBeenCalled();
+    });
+
+    test('routes a global-state projection whose value is equal-earth to the adaptive Equal Earth composite', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const style = new Style(getStubMap());
+        style._load(createStyleJSON({
+            state: {projectionType: {default: 'equal-earth'}},
+            projection: {type: ['global-state', 'projectionType']}
+        }), {validate: false});
+        expect(style.projection).toBeInstanceOf(EqualEarthAdaptiveProjection);
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    test('warns once, not twice, when a projection expression fails at evaluation', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const style = new Style(getStubMap());
+        style._load(createStyleJSON({
+            projection: {type: ['string', ['global-state', 'missing']]}
+        }), {validate: false});
+        expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    test('swaps composites when the global state moves the projection to the other family', async () => {
+        const style = new Style(getStubMap());
+        style.loadJSON(createStyleJSON({
+            state: {projectionType: {default: 'equal-earth'}},
+            projection: {type: ['global-state', 'projectionType']}
+        }));
+        await style.once('style.load');
+        expect(style.projection).toBeInstanceOf(EqualEarthAdaptiveProjection);
+
+        style.setGlobalStateProperty('projectionType', 'vertical-perspective');
+        expect(style.projection).toBeInstanceOf(GlobeProjection);
+
+        style.setGlobalStateProperty('projectionType', 'equal-earth');
+        expect(style.projection).toBeInstanceOf(EqualEarthAdaptiveProjection);
+    });
+
+    test('keeps the composite when the global state stays in its family', async () => {
+        const style = new Style(getStubMap());
+        style.loadJSON(createStyleJSON({
+            state: {projectionType: {default: 'equal-earth'}},
+            projection: {type: ['global-state', 'projectionType']}
+        }));
+        await style.once('style.load');
+        const projection = style.projection;
+
+        style.setGlobalStateProperty('projectionType', 'mercator');
+        expect(style.projection).toBe(projection);
     });
 });
 

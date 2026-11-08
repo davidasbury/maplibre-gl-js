@@ -1,3 +1,4 @@
+import {ProjectionDefinition, createExpression, latest, type StylePropertySpecification} from '@maplibre/maplibre-gl-style-spec';
 import {warnOnce} from '../../util/util.ts';
 import {MercatorProjection} from './mercator_projection.ts';
 import {createMercatorTransform} from './mercator_transform.ts';
@@ -33,12 +34,12 @@ export function createProjectionFromName(name: ProjectionSpecification['type'], 
         if (registeredName) {
             warnOnce(`Projection expressions cannot use the registered projection "${registeredName}", which only works as a plain name. Falling back to the globe projection.`);
         }
-        // Stage C: a projection expression whose stops include equal-earth
+        // Stage C: a projection expression that can produce equal-earth
         // routes to the adaptive Equal Earth composite; anything else keeps
         // the globe composite (the pre-existing behavior for
         // vertical-perspective/mercator expressions).
-        if ((name as unknown[]).flat(20).includes('equal-earth')) {
-            const eeAdaptiveProjection = new EqualEarthAdaptiveProjection({type: name});
+        if (routesToEqualEarth(name, globalState)) {
+            const eeAdaptiveProjection = new EqualEarthAdaptiveProjection({type: name}, globalState);
             return {
                 projection: eeAdaptiveProjection,
                 transform: new EqualEarthAdaptiveTransform(transformOptions),
@@ -117,7 +118,7 @@ export function createProjectionFromName(name: ProjectionSpecification['type'], 
                 'equal-earth',
                 6,
                 'mercator'
-            ] as any});
+            ] as any}, {});
             return {
                 projection: eeAdaptiveProjection,
                 transform: new EqualEarthAdaptiveTransform(transformOptions),
@@ -134,6 +135,41 @@ export function createProjectionFromName(name: ProjectionSpecification['type'], 
             };
         }
     }
+}
+
+/**
+ * The family a projection expression selects with the current global state: `'equal-earth'` or
+ * `'vertical-perspective'`, or `undefined` when it is mercator, which both composites render. Each composite renders
+ * only its own family (both blend to mercator), so the expression is evaluated at zoom 0, where the two differ: a
+ * `["global-state", ...]` value or a `case` branch picks the family there. An expression that crosses families by
+ * zoom renders in one family only.
+ */
+export function projectionFamily(expression: unknown[], globalState: Record<string, any>): 'equal-earth' | 'vertical-perspective' | undefined {
+    // Evaluated without error handling so a failing expression doesn't log its fallback warning twice; the
+    // composite's own evaluation logs it.
+    let value: unknown;
+    const parsed = createExpression(expression, 'projection.type', latest.projection.type as any as StylePropertySpecification, globalState);
+    if (parsed.result === 'success') {
+        try {
+            value = parsed.value.evaluateWithoutErrorHandling({zoom: 0});
+        } catch {
+            value = undefined;
+        }
+    }
+    const names = value instanceof ProjectionDefinition ? [value.from, value.to] : [value];
+    if (names.includes('equal-earth')) return 'equal-earth';
+    if (names.includes('vertical-perspective')) return 'vertical-perspective';
+    return undefined;
+}
+
+/**
+ * Whether a projection expression belongs on the adaptive Equal Earth composite rather than the globe composite: by
+ * its family (see `projectionFamily`), or, when that is mercator, by whether it names equal-earth at all. `Style`
+ * swaps composites when a global state change moves the expression to the other family.
+ */
+export function routesToEqualEarth(expression: unknown[], globalState: Record<string, any>): boolean {
+    const family = projectionFamily(expression, globalState);
+    return family ? family === 'equal-earth' : expression.flat(Infinity).includes('equal-earth');
 }
 
 /**

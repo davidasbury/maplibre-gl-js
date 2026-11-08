@@ -37,7 +37,8 @@ import {
     type GetImagesParameters,
     type GetImagesResponse
 } from '../util/actor_messages.ts';
-import {createProjectionFromName} from '../geo/projection/projection_factory.ts';
+import {createProjectionFromName, projectionFamily} from '../geo/projection/projection_factory.ts';
+import {EqualEarthAdaptiveProjection} from '../geo/projection/equal_earth_adaptive_projection.ts';
 
 import type {Source} from '../source/source.ts';
 import type {GeoJSONSource} from '../source/geojson_source.ts';
@@ -243,6 +244,8 @@ export class Style extends Evented<MapEventType> {
     _placedProjectionTransition: number;
     _initialGlobalState: Record<string, any>;
     _globalState: Record<string, any>;
+    /** The projection type the current projection was created from. */
+    _projectionType: ProjectionSpecification['type'];
     crossTileSymbolIndex: CrossTileSymbolIndex;
     pauseablePlacement: PauseablePlacement;
     placement: Placement;
@@ -441,6 +444,9 @@ export class Style extends Evented<MapEventType> {
         // Propagate global state changes to workers
         this.dispatcher.broadcast(MessageType.updateGlobalState, globalStateChange);
 
+        // After the broadcast: a swapped projection reloads every tile, and the workers must have the new state first.
+        this._rerouteProjectionForGlobalState();
+
         for (const id in this.tileManagers) {
             if (sourceIdsToReload.has(id)) {
                 this._reloadSource(id);
@@ -512,7 +518,8 @@ export class Style extends Evented<MapEventType> {
         this.stylesheet = nextState;
 
         this.setGlobalState(this.stylesheet.state ?? null);
-        const projectionObjects = createProjectionFromName(this.stylesheet.projection?.type || 'mercator', this.map._camera?.transform.constrainOverride, this._globalState);
+        this._projectionType = this.stylesheet.projection?.type || 'mercator';
+        const projectionObjects = createProjectionFromName(this._projectionType, this.map._camera?.transform.constrainOverride, this._globalState);
         this.projection = projectionObjects.projection;
 
         for (const id in nextState.sources) {
@@ -1833,7 +1840,24 @@ export class Style extends Evented<MapEventType> {
         this.sky.updateTransitions(parameters);
     }
 
+    /**
+     * The projection re-evaluates its expression every frame, but the globe and adaptive Equal Earth composites each
+     * render only their own family. When a global state change moves the stylesheet's projection expression to the
+     * other family, swap composites; mercator, which both render, keeps the current one. Only for the projection
+     * built from this stylesheet's expression: while a style loads, its state is set before its projection exists.
+     */
+    _rerouteProjectionForGlobalState(): void {
+        const type = this.stylesheet?.projection?.type;
+        if (!Array.isArray(type) || !this.projection || type !== this._projectionType) return;
+        const family = projectionFamily(type, this._globalState);
+        if (!family || (family === 'equal-earth') === this.projection instanceof EqualEarthAdaptiveProjection) return;
+        this.projection.destroy();
+        delete this.projection;
+        this._setProjectionInternal(type);
+    }
+
     _setProjectionInternal(name: ProjectionSpecification['type']): void {
+        this._projectionType = name;
         this._applyProjection(createProjectionFromName(name, this.map._camera?.transform.constrainOverride, this._globalState));
     }
 

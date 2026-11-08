@@ -1,7 +1,7 @@
 import {describe, test, expect} from 'vitest';
 import {EqualEarthAdaptiveProjection} from './equal_earth_adaptive_projection.ts';
 import {EqualEarthAdaptiveTransform} from './equal_earth_adaptive_transform.ts';
-import {createProjectionFromName} from './projection_factory.ts';
+import {createProjectionFromName, routesToEqualEarth} from './projection_factory.ts';
 import {EvaluationParameters} from '../../style/evaluation_parameters.ts';
 import {LngLat} from '../lng_lat.ts';
 import {OverscaledTileID} from '../../tile/tile_id.ts';
@@ -13,7 +13,7 @@ import type {TransitionParameters} from '../../style/properties.ts';
 const BLEND_EXPRESSION = ['interpolate', ['linear'], ['zoom'], 4, 'equal-earth', 6, 'mercator'];
 
 function projectionAtZoom(zoom: number): EqualEarthAdaptiveProjection {
-    const projection = new EqualEarthAdaptiveProjection({type: BLEND_EXPRESSION} as any);
+    const projection = new EqualEarthAdaptiveProjection({type: BLEND_EXPRESSION} as any, {});
     projection.updateTransitions({transition: false} as any as TransitionParameters);
     projection.recalculate(new EvaluationParameters(zoom));
     return projection;
@@ -24,6 +24,13 @@ describe('EqualEarthAdaptiveProjection', () => {
         expect(projectionAtZoom(0).transitionState).toBe(1);
         expect(projectionAtZoom(3.9).transitionState).toBe(1);
         expect(projectionAtZoom(4).transitionState).toBe(1);
+    });
+
+    test('transitionState: an interpolation between identical projections is that projection', () => {
+        const projection = new EqualEarthAdaptiveProjection({type: ['interpolate', ['linear'], ['zoom'], 4, 'mercator', 6, 'mercator']} as any, {});
+        projection.updateTransitions({transition: false} as any as TransitionParameters);
+        projection.recalculate(new EvaluationParameters(5));
+        expect(projection.transitionState).toBe(0);
     });
 
     test('transitionState: pure mercator above the upper stop', () => {
@@ -138,6 +145,42 @@ describe('projection factory routing', () => {
     test('vertical-perspective expressions still route to globe', () => {
         const {projection} = createProjectionFromName(['interpolate', ['linear'], ['zoom'], 11, 'vertical-perspective', 12, 'mercator'] as any, undefined, {});
         expect(projection).not.toBeInstanceOf(EqualEarthAdaptiveProjection);
+    });
+
+    test('a global-state projection routes by the state\'s current value', () => {
+        expect(routesToEqualEarth(['global-state', 'projectionType'], {projectionType: 'equal-earth'})).toBe(true);
+        expect(routesToEqualEarth(['global-state', 'projectionType'], {projectionType: 'vertical-perspective'})).toBe(false);
+        expect(routesToEqualEarth(['global-state', 'projectionType'], {projectionType: 'mercator'})).toBe(false);
+    });
+
+    test('a case on global state routes by the branch it selects', () => {
+        const expression = ['case', ['global-state', 'equalArea'],
+            ['interpolate', ['linear'], ['zoom'], 4, 'equal-earth', 6, 'mercator'],
+            ['interpolate', ['linear'], ['zoom'], 11, 'vertical-perspective', 12, 'mercator']];
+        expect(routesToEqualEarth(expression, {equalArea: true})).toBe(true);
+        expect(routesToEqualEarth(expression, {equalArea: false})).toBe(false);
+    });
+
+    test('an expression that is mercator at zoom 0 routes on whether it names equal-earth', () => {
+        expect(routesToEqualEarth(['interpolate', ['linear'], ['zoom'], 0, 'mercator', 5, 'equal-earth'], {})).toBe(true);
+        expect(routesToEqualEarth(['interpolate', ['linear'], ['zoom'], 0, 'mercator', 5, 'vertical-perspective'], {})).toBe(false);
+    });
+
+    test('a failing expression routes without throwing', () => {
+        expect(routesToEqualEarth(['string', ['global-state', 'missing']], {})).toBe(false);
+    });
+
+    test('the adaptive composite evaluates global state by reference', () => {
+        const globalState: Record<string, any> = {projectionType: 'equal-earth'};
+        const {projection} = createProjectionFromName(['global-state', 'projectionType'] as any, undefined, globalState);
+        expect(projection).toBeInstanceOf(EqualEarthAdaptiveProjection);
+        const p = projection as EqualEarthAdaptiveProjection;
+        p.updateTransitions({transition: false} as any as TransitionParameters);
+        p.recalculate(new EvaluationParameters(5));
+        expect(p.transitionState).toBe(1);
+        globalState.projectionType = 'mercator';
+        p.recalculate(new EvaluationParameters(5));
+        expect(p.transitionState).toBe(0);
     });
 });
 
