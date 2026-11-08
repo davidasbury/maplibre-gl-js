@@ -215,11 +215,11 @@
     </div>
     <div class="diag-section" data-section="relief" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-relief">relief <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-relief">
-        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Mutually exclusive with the 2D relief options. Pitch (ctrl+drag, or ?pitch=) to see relief; under ?adaptive=1 the tilt eases to flat as the blend enters Equal Earth. Unavailable in clipped mode, where the camera stays flat and the outline clip would be lost. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
+        <div class="diag-toggle"><label for="diag-terrain" title="Real 3D terrain: map.setTerrain() drapes the active basemap over a Mapterhorn terrarium DEM mesh. Turns shade on too, draped over the 3D surface, unless esri hs is already on (untick shade to see the bare mesh). Adaptive mode only: static Equal Earth keeps the camera flat. Tilt with Shift+arrow up/down, ctrl+drag or by dragging the compass; the tilt eases to flat as the blend enters Equal Earth. ?terrain=1. Network required."><input type="checkbox" id="diag-terrain" disabled /> terrain <span style="opacity:.6">(3D)</span></label></div>
         <div id="diag-terrain-exag" class="diag-toggle diag-sub" style="display:none" title="3D terrain vertical exaggeration (map.setTerrain exaggeration). Live-updates, no reload; ?exag= persists in the URL. 1.0 = true scale.">
             <label>exag <input type="range" id="diag-exag" min="0" max="5" step="0.1" style="width:70px;vertical-align:middle" disabled /> <span id="diag-exag-val">1.5</span></label>
         </div>
-        <div class="diag-toggle"><label for="diag-shade" title="Mapterhorn hillshade: 2D relief over the active basemap. Mutually exclusive with terrain and esri hs. ?shade=1."><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label> <label for="diag-esri-hs" title="Esri World Hillshade: 2D relief raster (keyless, services.arcgisonline.com) draped over the active basemap. Mutually exclusive with terrain and shade. ?esrihs=1. Network required."><input type="checkbox" id="diag-esri-hs" disabled /> esri hs <span style="opacity:.6">(2D)</span></label></div>
+        <div class="diag-toggle"><label for="diag-shade" title="Mapterhorn hillshade over the active basemap; with terrain on, it drapes over the 3D surface. Exclusive with esri hs. ?shade=1."><input type="checkbox" id="diag-shade" disabled /> shade <span style="opacity:.6">(2D)</span></label> <label for="diag-esri-hs" title="Esri World Hillshade: 2D relief raster (keyless, services.arcgisonline.com) draped over the active basemap (and over the 3D surface with terrain on). Exclusive with shade. ?esrihs=1. Network required."><input type="checkbox" id="diag-esri-hs" disabled /> esri hs <span style="opacity:.6">(2D)</span></label></div>
     </div>
     <div class="diag-section" data-section="basemap" role="button" tabindex="0" aria-expanded="true" aria-controls="diag-body-basemap">basemap <span style="opacity:.6">(one, or none)</span> <span class="diag-collapse">&minus;</span></div>
     <div id="diag-body-basemap">
@@ -339,8 +339,8 @@
 
     // 3D terrain is now a RELIEF MODIFIER (?terrain=1), not a basemap: it
     // drapes whatever basemap is active over a real Mapterhorn DEM mesh via
-    // map.setTerrain(). Mutually exclusive with `shade` (both are relief from
-    // the same DEM). Back-compat: the old ?source=terrain still turns it on.
+    // map.setTerrain(). Turning it on also turns `shade` on, which drapes over
+    // the 3D surface (see the relief wiring). Back-compat: the old ?source=terrain still turns it on.
     let terrainOn = params.get('terrain') === '1' || params.get('source') === 'terrain';
 
     // ---- Hexagonal-bin basemap (owner request, 2026-07-23) --------------
@@ -849,11 +849,12 @@
     // construct and would clip mid-morph content (and the adaptive
     // transform doesn't carry the EE-only clip flags).
     const useClip = params.get('clip') !== '0' && !useAdaptive;
-    // 3D terrain is unavailable in clipped mode (owner request 2026-11-07):
-    // the static projection keeps the camera flat, so relief never shows,
-    // and terrain renders through a texture the outline clip can't mask, so
-    // the clip vanished. ?terrain=1 on a clipped URL is ignored.
-    if (useClip) terrainOn = false;
+    // 3D terrain is available in adaptive mode only (owner requests
+    // 2026-11-07): static Equal Earth (clipped or wrapped) keeps the camera
+    // flat, so relief never shows, and in clipped mode terrain's
+    // render-to-texture path also bypassed the outline clip. ?terrain=1 on a
+    // static URL is ignored.
+    if (!useAdaptive) terrainOn = false;
 
     // Engine seam-bit stencil clip is the DEFAULT since 2026-07-22 (owner
     // approved after the session-0030 fixes); `?engineclip=0` falls back to
@@ -1902,6 +1903,9 @@
     let coastOn = params.get('coast') === '1';
     let shadeOn = params.get('shade') === '1';
     let esriHsOn = params.get('esrihs') === '1';
+    // ?terrain=1 brings shade with it unless the link says ?shade=0 or already
+    // has esri hs (decided here, before the first style load applies overlays).
+    if (terrainOn && params.get('shade') !== '0' && !esriHsOn) shadeOn = true;
     let imageOn = params.get('image') === '1';
     let citiesOn = params.get('cities') === '1';
     let citiesApplied = false; // whether the fetched data is in the cities source
@@ -1991,7 +1995,7 @@
         // Esri World Hillshade: a keyless raster tile relief (services.arcgisonline.com),
         // a 2D alternative to the Mapterhorn `shade` -- reprojected onto the EE plane
         // by MapLibre like the s2cloudless image overlay. Half-opacity so the basemap
-        // reads through. Relief is 3-way exclusive, so shade and this are never both on.
+        // reads through. Exclusive with shade, so the two are never both on.
         if (esriHsOn) {
             if (!map.getSource('esri-hillshade')) {
                 map.addSource('esri-hillshade', {
@@ -2213,11 +2217,14 @@
             setUrlParam('zb', zB === DEFAULT_ZB ? null : zB.toFixed(1));
         });
 
-        // --- Relief is 3-way exclusive: terrain (3D) / shade (2D) / esri hs
-        // (2D). Each drapes the active basemap and re-applies across basemap
-        // swaps (applyTerrain / applyExtraOverlays on style.load). Turning one
-        // on turns the other two off. terrain uses map.setTerrain(); shade and
-        // esri hs are raster/hillshade layers added by applyExtraOverlays. The
+        // --- Relief: terrain (3D mesh) plus at most one hillshade, shade
+        // (Mapterhorn) or esri hs (Esri World Hillshade); the two hillshades
+        // are exclusive. Each drapes the active basemap and re-applies across
+        // basemap swaps (applyTerrain / applyExtraOverlays on style.load).
+        // Since 2026-11-08 (owner request) a bare terrain mesh is never the
+        // default: turning terrain on also turns shade on unless esri hs is
+        // already on, and the hillshade drapes over the 3D surface. Unticking
+        // shade under terrain is remembered as ?shade=0. The
         // exag row is a .diag-sub shown only when terrain is on (like z_a/z_b),
         // so it costs nothing against the E8 default-panel budget.
         const shadeCheckbox = document.getElementById('diag-shade');
@@ -2231,37 +2238,12 @@
             terrainExagRow.style.display = terrainOn ? '' : 'none';
             exagSlider.disabled = !terrainOn;
         }
-        // Turn off every relief mode except `keep` (state + checkbox + URL).
-        // Each cleared mode's own apply path runs; the caller then re-applies.
-        function clearOtherRelief(keep) {
-            if (keep !== 'terrain' && terrainOn) {
-                terrainOn = false; terrainCheckbox.checked = false; setUrlParam('terrain', null);
-                refreshTerrainExagRow(); applyTerrain();
-            }
-            if (keep !== 'shade' && shadeOn) {
-                shadeOn = false; shadeCheckbox.checked = false; setUrlParam('shade', null);
-            }
-            if (keep !== 'esrihs' && esriHsOn) {
-                esriHsOn = false; esriHsCheckbox.checked = false; setUrlParam('esrihs', null);
-            }
-        }
-        // Init exclusivity priority if more than one relief param is set:
-        // terrain > shade > esri hs.
-        if (terrainOn) { shadeOn = false; esriHsOn = false; }
-        else if (shadeOn) { esriHsOn = false; }
-        // Clipped mode can't show terrain (see useClip); applyClipMode keeps
-        // this in step when the projection radios switch live.
-        function setTerrainAvailable(available) {
-            terrainCheckbox.disabled = !available;
-            if (available || !terrainOn) return;
-            terrainOn = false;
-            terrainCheckbox.checked = false;
-            setUrlParam('terrain', null);
-            refreshTerrainExagRow();
-            applyTerrain();
-        }
-        terrainCheckbox.disabled = useClip;
-        if (useClip) setUrlParam('terrain', null);
+        // Init: if both hillshades are requested, shade wins.
+        if (shadeOn) esriHsOn = false;
+        // Adaptive mode only (see useAdaptive); switching modes reloads, so
+        // this is decided once.
+        terrainCheckbox.disabled = !useAdaptive;
+        if (!useAdaptive) setUrlParam('terrain', null);
         shadeCheckbox.disabled = false;
         esriHsCheckbox.disabled = false;
         terrainCheckbox.checked = terrainOn;
@@ -2269,21 +2251,31 @@
         esriHsCheckbox.checked = esriHsOn;
         terrainCheckbox.addEventListener('change', () => {
             terrainOn = terrainCheckbox.checked;
-            if (terrainOn) clearOtherRelief('terrain');
             setUrlParam('terrain', terrainOn ? '1' : null);
             refreshTerrainExagRow();
+            // Terrain first: adding the shade layer briefly marks the style as
+            // loading, which would defer setTerrain until the map goes idle.
             applyTerrain();
-            applyExtraOverlays(); // drop any shade/esri-hs layer cleared above
+            if (terrainOn && !shadeOn && !esriHsOn) { // a bare mesh barely shows: bring shade
+                shadeOn = true; shadeCheckbox.checked = true; applyExtraOverlays();
+            }
+            setUrlParam('shade', shadeOn ? '1' : null);
         });
         shadeCheckbox.addEventListener('change', () => {
             shadeOn = shadeCheckbox.checked;
-            if (shadeOn) clearOtherRelief('shade');
-            setUrlParam('shade', shadeOn ? '1' : null);
+            if (shadeOn && esriHsOn) {
+                esriHsOn = false; esriHsCheckbox.checked = false; setUrlParam('esrihs', null);
+            }
+            // Off under terrain (with no other hillshade) is recorded, since
+            // ?terrain=1 alone means shade on.
+            setUrlParam('shade', shadeOn ? '1' : (terrainOn && !esriHsOn ? '0' : null));
             applyExtraOverlays();
         });
         esriHsCheckbox.addEventListener('change', () => {
             esriHsOn = esriHsCheckbox.checked;
-            if (esriHsOn) clearOtherRelief('esrihs');
+            if (esriHsOn && shadeOn) {
+                shadeOn = false; shadeCheckbox.checked = false; setUrlParam('shade', null);
+            }
             setUrlParam('esrihs', esriHsOn ? '1' : null);
             applyExtraOverlays();
         });
@@ -2340,7 +2332,6 @@
             transform.outlineFitZoomFloor = on;
             transform.clipAtProjectionOutline = on && useEngineClip;
             clipOn = on;
-            setTerrainAvailable(!on);
             if (on) {
                 // Zoom out to the outline-fit floor so the mode is
                 // immediately visible (0 clamps up to the floor).
