@@ -6,6 +6,7 @@ import {StencilMode} from '../webgl/stencil_mode.ts';
 import {CullFaceMode} from '../webgl/cull_face_mode.ts';
 import {shaders} from '../shaders/shaders.ts';
 import {MercatorShaderDefine, MercatorShaderVariantKey} from '../geo/projection/mercator_projection.ts';
+import {SEAM_STENCIL_BIT} from './seam_clip_mask.ts';
 
 import type {IReadonlyTransform} from '../geo/transform_interface.ts';
 import type {Terrain, TerrainData} from './terrain.ts';
@@ -23,6 +24,7 @@ import type {LightPropsPossiblyEvaluated} from '../style/light_properties.g.ts';
 import type {SkyPropsPossiblyEvaluated} from '../style/sky_properties.g.ts';
 import type {Projection, TileMeshUsage} from '../geo/projection/projection.ts';
 import type {CrossTileID, VariableOffset} from '../symbol/placement.ts';
+import type {SeamClipMask} from './seam_clip_mask.ts';
 
 export type RenderPass = 'offscreen' | 'opaque' | 'translucent';
 
@@ -70,6 +72,7 @@ type FrameRenderContextOptions = {
     currentPass: RenderPass;
     /** The projection that builds the tile meshes, undefined until the style has one. */
     projection: Projection | undefined;
+    seamClipMask?: SeamClipMask;
 };
 
 /** Distinct z-planes within each layer that can be drawn to, implemented with the WebGL depth buffer. */
@@ -102,6 +105,9 @@ export class FrameRenderContext {
     readonly context: Context;
     readonly programCache: ProgramCache;
     private readonly projection: Projection | undefined;
+    private readonly seamClipMask: SeamClipMask | undefined;
+    /** Whether the seam bit is in the stencil buffer since the last clear. */
+    private seamMaskDrawnForEpoch: boolean = false;
     /** The source whose clipping masks are in the stencil buffer. */
     private currentStencilSource: string;
     private nextStencilID: number = 1;
@@ -115,6 +121,7 @@ export class FrameRenderContext {
         this.programCache = options.programCache;
         this.currentPass = options.currentPass;
         this.projection = options.projection;
+        this.seamClipMask = options.seamClipMask;
     }
 
     getProjectionDataForTile(tileID: OverscaledTileID, options: {aligned?: boolean; applyTerrainMatrix?: boolean} = {}): RendererProjectionData {
@@ -207,7 +214,54 @@ export class FrameRenderContext {
     clearStencil(): void {
         this.nextStencilID = 1;
         this.currentStencilSource = undefined;
+        this.seamMaskDrawnForEpoch = false;
         this.context.clear({stencil: 0});
+    }
+
+    /**
+     * True when the Equal Earth engine antimeridian clip is on this frame:
+     * the seam bit marks everything beyond the projection outline, and
+     * content that is not tile-clipped (backgrounds, symbols) should apply
+     * {@link stencilModeForSeamClip} so it stops there too. Never while
+     * rendering to a texture (terrain), which has no screen-space outline.
+     */
+    seamClipActive(): boolean {
+        const transform = this.transform as IReadonlyTransform & {clipAtProjectionOutline?: boolean};
+        return !!this.seamClipMask && this.projection?.name === 'equal-earth' && transform.clipAtProjectionOutline === true && !this.isRenderingToTexture;
+    }
+
+    /**
+     * Stencil test for content that is not tile-clipped, under the seam
+     * clip: pass wherever the seam bit is clear, write nothing. Tile-clipped
+     * content needs no equivalent: its EQUAL/0xFF test fails on seam pixels.
+     */
+    stencilModeForSeamClip(): Readonly<StencilMode> {
+        const gl = this.context.gl;
+        return new StencilMode({func: gl.EQUAL, mask: SEAM_STENCIL_BIT}, 0x00, 0x00, gl.KEEP, gl.KEEP, gl.KEEP);
+    }
+
+    /**
+     * Draws the seam bit if the seam clip is on and a stencil clear has
+     * wiped it. Called after every clear on the main framebuffer, before
+     * anything tests against it.
+     */
+    renderSeamClipMaskIfNeeded(): void {
+        if (this.seamMaskDrawnForEpoch || !this.seamClipActive()) return;
+        this.seamMaskDrawnForEpoch = true;
+        this.seamClipMask.draw(this);
+    }
+
+    /**
+     * Stencil IDs stay below the seam bit while the seam clip is on, so
+     * writes never touch it (write mask 0x7F) and every 0xFF test fails on
+     * seam pixels. Upstream's full 8-bit range otherwise.
+     */
+    private get stencilIDLimit(): number {
+        return this.seamClipActive() ? SEAM_STENCIL_BIT : 256;
+    }
+
+    private get stencilWriteMask(): number {
+        return this.seamClipActive() ? SEAM_STENCIL_BIT - 1 : 0xFF;
     }
 
     /** Makes the next tile-clipped layer draw its clipping masks again. */
@@ -223,8 +277,10 @@ export class FrameRenderContext {
 
         this.currentStencilSource = layer.source;
 
-        if (this.nextStencilID + tileIDs.length > 256) {
+        this.renderSeamClipMaskIfNeeded();
+        if (this.nextStencilID + tileIDs.length > this.stencilIDLimit) {
             this.clearStencil();
+            this.renderSeamClipMaskIfNeeded();
         }
 
         const context = this.context;
@@ -256,7 +312,7 @@ export class FrameRenderContext {
             const projectionData = this.getProjectionDataForTile(tileID);
 
             program.draw(context, gl.TRIANGLES, DepthMode.disabled,
-                new StencilMode({func: gl.ALWAYS, mask: 0}, stencilRef, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE),
+                new StencilMode({func: gl.ALWAYS, mask: 0}, stencilRef, this.stencilWriteMask, gl.KEEP, gl.KEEP, gl.REPLACE),
                 ColorMode.disabled, this.isRenderingToTexture ? CullFaceMode.disabled : CullFaceMode.backCCW, null,
                 terrainData, projectionData, '$clipping', mesh.vertexBuffer,
                 mesh.indexBuffer, mesh.segments);
@@ -267,13 +323,15 @@ export class FrameRenderContext {
     stencilModeFor3D(): StencilMode {
         this.currentStencilSource = undefined;
 
-        if (this.nextStencilID + 1 > 256) {
+        if (this.nextStencilID + 1 > this.stencilIDLimit) {
             this.clearStencil();
+            this.renderSeamClipMaskIfNeeded();
         }
 
         const id = this.nextStencilID++;
         const gl = this.context.gl;
-        return new StencilMode({func: gl.NOTEQUAL, mask: 0xFF}, id, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
+        const mask = this.stencilWriteMask;
+        return new StencilMode({func: gl.NOTEQUAL, mask}, id, mask, gl.KEEP, gl.KEEP, gl.REPLACE);
     }
 
     stencilModeForClipping(tileID: OverscaledTileID): StencilMode {
@@ -301,12 +359,17 @@ export class FrameRenderContext {
         const stencilValues = coords[0].overscaledZ - minTileZ + 1;
         if (stencilValues > 1) {
             this.currentStencilSource = undefined;
-            if (this.nextStencilID + stencilValues > 256) {
+            if (this.nextStencilID + stencilValues > this.stencilIDLimit) {
                 this.clearStencil();
+                this.renderSeamClipMaskIfNeeded();
             }
+            // Test masks stay 0xFF while write masks keep below the seam bit:
+            // wherever the seam clip set bit 7 the value reads >= 128 and every
+            // GEQUAL test fails, so raster content clips at the outline for free.
+            const writeMask = this.stencilWriteMask;
             const zToStencilMode: Record<number, Readonly<StencilMode>> = {};
             for (let i = 0; i < stencilValues; i++) {
-                zToStencilMode[i + minTileZ] = new StencilMode({func: gl.GEQUAL, mask: 0xFF}, i + this.nextStencilID, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilMode[i + minTileZ] = new StencilMode({func: gl.GEQUAL, mask: 0xFF}, i + this.nextStencilID, writeMask, gl.KEEP, gl.KEEP, gl.REPLACE);
             }
             this.nextStencilID += stencilValues;
             return [zToStencilMode, coords];
@@ -325,13 +388,17 @@ export class FrameRenderContext {
         const stencilValues = coords[0].overscaledZ - minTileZ + 1;
 
         this.clearStencil();
+        // The subdivision two-pass clears unconditionally: before this repaint
+        // it was the main hillshade leak past the outline.
+        this.renderSeamClipMaskIfNeeded();
+        const writeMask = this.stencilWriteMask;
 
         if (stencilValues > 1) {
             const zToStencilModeHigh: Record<number, Readonly<StencilMode>> = {};
             const zToStencilModeLow: Record<number, Readonly<StencilMode>> = {};
             for (let i = 0; i < stencilValues; i++) {
-                zToStencilModeHigh[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, stencilValues + 1 + i, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
-                zToStencilModeLow[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, 1 + i, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilModeHigh[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, stencilValues + 1 + i, writeMask, gl.KEEP, gl.KEEP, gl.REPLACE);
+                zToStencilModeLow[i + minTileZ] = new StencilMode({func: gl.GREATER, mask: 0xFF}, 1 + i, writeMask, gl.KEEP, gl.KEEP, gl.REPLACE);
             }
             this.nextStencilID = stencilValues * 2 + 1;
             return [
@@ -342,8 +409,8 @@ export class FrameRenderContext {
         } else {
             this.nextStencilID = 3;
             return [
-                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 2, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE)},
-                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 1, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE)},
+                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 2, writeMask, gl.KEEP, gl.KEEP, gl.REPLACE)},
+                {[minTileZ]: new StencilMode({func: gl.GREATER, mask: 0xFF}, 1, writeMask, gl.KEEP, gl.KEEP, gl.REPLACE)},
                 coords
             ];
         }

@@ -62,7 +62,10 @@ export function drawSymbols(painter: Painter, tileManager: TileManager, layer: S
     if (frameRenderContext.currentPass !== 'translucent') return;
 
     // Disable the stencil test so that labels aren't clipped to tile boundaries.
-    const stencilMode = StencilMode.disabled;
+    // Under the equal-earth seam clip they apply the seam-bit test instead, or
+    // labels beyond the antimeridian render into the void (owner-reported on
+    // the first engineclip build).
+    const stencilMode = frameRenderContext.seamClipActive() ? frameRenderContext.stencilModeForSeamClip() : StencilMode.disabled;
     const colorMode = frameRenderContext.colorModeForRenderPass();
     const hasVariablePlacement = layer._unevaluatedLayout.hasValue('text-variable-anchor') || layer._unevaluatedLayout.hasValue('text-variable-anchor-offset');
 

@@ -17,6 +17,7 @@ import {Mesh} from './mesh.ts';
 import {FrameRenderContext, type FrameRenderData} from './frame_render_context.ts';
 import {updateFrameUniformBuffer} from '../webgl/frame_uniform_buffer.ts';
 import {releaseProjectionUniformBuffers} from '../webgl/projection_uniform_buffer.ts';
+import {SeamClipMask} from './seam_clip_mask.ts';
 import {coveringTiles} from '../geo/projection/covering_tiles.ts';
 import {isSymbolStyleLayer} from '../style/style_layer/symbol_style_layer.ts';
 import {isCircleStyleLayer} from '../style/style_layer/circle_style_layer.ts';
@@ -105,6 +106,8 @@ export class Painter {
     lineAtlas: LineAtlas;
     patternAtlas: PatternAtlas;
     programCache: ProgramCache;
+    /** Equal Earth engine antimeridian clip geometry; see FrameRenderContext.seamClipActive. */
+    seamClipMask: SeamClipMask;
     debugOverlayTexture: Texture;
     debugOverlayCanvas: HTMLCanvasElement;
     // this object stores the current camera-matrix and the last render time
@@ -116,6 +119,7 @@ export class Painter {
         this.drawFunctions = webglDrawFunctions;
         this.context = new Context(gl);
         this.programCache = new ProgramCache(this.context);
+        this.seamClipMask = new SeamClipMask();
         this.layerOpacityFbo = null;
         this._tileTextures = {};
         this._rttObjectRecyclePool = [];
@@ -241,7 +245,8 @@ export class Painter {
             context: this.context,
             programCache: this.programCache,
             currentPass: 'offscreen',
-            projection: style.projection
+            projection: style.projection,
+            seamClipMask: this.seamClipMask
         });
 
         this.lineAtlas = style.lineAtlas;
@@ -310,6 +315,10 @@ export class Painter {
         // Clear buffers in preparation for drawing to the main framebuffer
         this.context.clear({color: data.showOverdrawInspector ? Color.black : Color.transparent, depth: 1});
         frameRenderContext.clearStencil();
+        // Seam-bit pre-pass must precede ANY content, including background
+        // layers (they are not tile-clipped and render before the first
+        // tile-mask epoch would lazily trigger it).
+        frameRenderContext.renderSeamClipMaskIfNeeded();
 
         // draw sky first to not overwrite symbols
         if (data.sky) this.drawFunctions.sky(this.skyMesh, frameRenderContext);
@@ -594,6 +603,7 @@ export class Painter {
         this.layerOpacityFbo = null;
 
         if (this.tileExtentBuffer) this.tileExtentBuffer.destroy();
+        this.seamClipMask?.destroy();
         if (this.debugBuffer) this.debugBuffer.destroy();
         if (this.rasterBoundsBuffer) this.rasterBoundsBuffer.destroy();
         if (this.viewportBuffer) this.viewportBuffer.destroy();
