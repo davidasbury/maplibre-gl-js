@@ -3,9 +3,14 @@
 // projection, so each vertex goes: tile pos -> mercator 0..1 -> lng/lat ->
 // Equal Earth forward polynomial (Savric, Patterson & Jenny 2018). The
 // polynomial must match src/geo/equal_earth_coordinate.ts exactly.
-// PI and u_projection_matrix come from _prelude.vertex.glsl.
+// PI and u_projection_matrix come from _prelude.vertex.glsl. The other
+// u_projection_* values live in its ProjectionUBO block; custom layers get
+// this chunk without _prelude.vertex.glsl (no PROJECTION_UBO), so they get
+// the plain-uniform declarations below, globe's pattern.
 
+#ifndef PROJECTION_UBO
 uniform highp vec4 u_projection_tile_mercator_coords;
+#endif
 // Per-tile linearized path (f32 round 2, 2026-07-22): above the transform's
 // linearization threshold the CPU sends a per-tile tile-units -> clip matrix
 // (f64-composed, f32-cast -- the mercator posMatrix trick) in
@@ -22,16 +27,20 @@ uniform highp vec4 u_projection_tile_mercator_coords;
 // the residual after the quadratic terms is third-order in the tile span
 // (CPU-side eligibility keeps it below 0.05 px). Pole-row tiles are excluded
 // CPU-side, so the pole sentinel branch below never meets this path.
+#ifndef PROJECTION_UBO
 uniform highp vec4 u_projection_ee_quad_uv;
 uniform highp vec4 u_projection_ee_quad_vv;
+#endif
 // Stage C adaptive blend (plan step 11): 1 = fully Equal Earth (the static
 // projection always sends 1 — see EqualEarthTransform.getProjectionData),
 // 0 = fully mercator, between = the adaptive transform's zoom-driven morph.
 // u_projection_fallback_matrix is the MERCATOR per-tile matrix, so at 0 the
 // blend lands exactly on the pure-mercator rendering. Same uniform pair and
 // semantics as globe's vertical-perspective↔mercator transition.
+#ifndef PROJECTION_UBO
 uniform highp float u_projection_transition;
 uniform mat4 u_projection_fallback_matrix;
+#endif
 
 bool eeLinearizedMode() {
     return u_projection_tile_mercator_coords.z == 0.0;

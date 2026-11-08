@@ -10,7 +10,11 @@ const layout = std140Layout([
     {name: 'u_projection_clipping_plane', type: 'vec4'},
     {name: 'u_projection_transition', type: 'float'},
     {name: 'u_projection_clip_antimeridian', type: 'int'},
+    {name: 'u_projection_ee_quad_uv', type: 'vec4'},
+    {name: 'u_projection_ee_quad_vv', type: 'vec4'},
 ]);
+
+const ZERO_VEC4: [number, number, number, number] = [0, 0, 0, 0];
 
 const offsets = layout.offsets;
 
@@ -30,6 +34,10 @@ function updateProjectionUniformBuffer(buffer: UniformBuffer, projectionData: Pr
     f32.set(projectionData.clippingPlane, offsets.u_projection_clipping_plane);
     f32[offsets.u_projection_transition] = projectionData.projectionTransition;
     buffer.pendingWords[offsets.u_projection_clip_antimeridian] = projectionData.clipAntimeridian ? 1 : 0;
+    // Always written: buffers are recycled across tiles and projections, so
+    // a projection that omits these must not inherit another tile's values.
+    f32.set(projectionData.equalEarthQuadUV ?? ZERO_VEC4, offsets.u_projection_ee_quad_uv);
+    f32.set(projectionData.equalEarthQuadVV ?? ZERO_VEC4, offsets.u_projection_ee_quad_vv);
     buffer.upload();
 }
 

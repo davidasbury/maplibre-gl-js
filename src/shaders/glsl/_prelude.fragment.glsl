@@ -25,6 +25,10 @@ layout(std140) uniform ProjectionUBO {
     highp vec4 u_projection_clipping_plane;
     highp float u_projection_transition;
     highp int u_projection_clip_antimeridian;
+    // Must match _prelude.vertex.glsl's block field for field (the program
+    // fails to link otherwise); used by the Equal Earth vertex chunk only.
+    highp vec4 u_projection_ee_quad_uv;
+    highp vec4 u_projection_ee_quad_vv;
 };
 layout(std140) uniform FrameUBO {
     highp vec2 u_units_to_pixels;

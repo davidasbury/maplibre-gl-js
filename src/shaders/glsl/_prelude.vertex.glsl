@@ -179,6 +179,10 @@ layout(std140) uniform ProjectionUBO {
     highp vec4 u_projection_clipping_plane;
     highp float u_projection_transition;
     highp int u_projection_clip_antimeridian;
+    // Equal Earth high-zoom linearized path only (see
+    // _projection_equal_earth.vertex.glsl); zero for every other projection.
+    highp vec4 u_projection_ee_quad_uv;
+    highp vec4 u_projection_ee_quad_vv;
 };
 layout(std140) uniform FrameUBO {
     highp vec2 u_units_to_pixels;
